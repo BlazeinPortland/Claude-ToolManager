@@ -1,7 +1,7 @@
 # Claude Tool Manager — Launcher
 # Starts the local web server and opens the browser
 
-$ScriptDir = "C:\Software"
+$ScriptDir = "C:\Software\Claude-ToolManager"
 $AppFile   = "$ScriptDir\tool-manager.py"
 
 # Locate Python — check PATH first, then common install locations
