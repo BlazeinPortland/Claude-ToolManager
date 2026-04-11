@@ -29,7 +29,7 @@ App.tabs.settings = {
     // MCP Servers
     html += '<div class="card">';
     html += '<div class="card-header"><span class="card-title">MCP Servers</span>';
-    html += `<span class="card-badge badge-blue">${Array.isArray(mcps) ? mcps.length : 0} configured</span>`;
+    html += `<span class="card-badge badge-cyan">${Array.isArray(mcps) ? mcps.length : 0} configured</span>`;
     html += '</div>';
 
     if (Array.isArray(mcps) && mcps.length) {
@@ -52,10 +52,21 @@ App.tabs.settings = {
 
     // Global Permissions
     html += '<div class="card">';
-    html += '<div class="card-header"><span class="card-title">Global Permissions</span></div>';
+    html += `<div class="card-header"><span class="card-title">Global Permissions</span><span class="card-badge badge-purple">${(global?.permissions?.allow || []).length} tools</span></div>`;
+    html += `<div class="info-box">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      <div>
+        <strong>Pre-authorized — unrestricted access</strong>
+        These tools have been granted full access and Claude can invoke them at any time without pausing to ask for permission mid-session.
+        Choosing <em>"Allow always"</em> in Claude writes entries here, in <code>~/.claude/settings.json</code> under <code>permissions.allow</code>.
+        To revoke a tool, remove its entry from that file manually or via the Project tab below.
+      </div>
+    </div>`;
     const gPerms = global?.permissions?.allow || [];
     if (gPerms.length) {
-      html += '<div class="chip-list">';
+      html += '<div class="chips-wrap">';
       for (const p of gPerms) {
         html += `<span class="chip">${this._esc(p)}</span>`;
       }
@@ -83,22 +94,31 @@ App.tabs.settings = {
     if (project && !project.error) {
       // Project Permissions
       html += '<div class="card">';
-      html += '<div class="card-header"><span class="card-title">Project Permissions</span>';
       const pPerms = project?.permissions?.allow || [];
-      html += `<span class="card-badge badge-blue">${pPerms.length} entries</span>`;
-      html += '</div>';
+      html += `<div class="card-header"><span class="card-title">Project Permissions</span><span class="card-badge badge-purple">${pPerms.length} entries</span></div>`;
+      html += `<div class="info-box">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        <div>
+          <strong>Project-scoped access</strong>
+          These permissions apply only to the currently selected project. Add <code>mcp__server__tool</code> entries to allow specific tools, or use <code>mcp__server__*</code> to allow all tools from a server.
+        </div>
+      </div>`;
 
       if (pPerms.length) {
-        html += '<div class="chip-list" style="margin-bottom:12px">';
+        html += '<div class="chips-wrap" style="margin-bottom:14px">';
         for (const p of pPerms) {
-          html += `<span class="chip">${this._esc(p)} <span class="chip-remove" onclick="App.tabs.settings._removePerm('${this._esc(p)}')">&times;</span></span>`;
+          html += `<span class="chip chip-removable">${this._esc(p)} <button onclick="App.tabs.settings._removePerm('${this._esc(p)}')" title="Remove">&times;</button></span>`;
         }
         html += '</div>';
+      } else {
+        html += '<div style="margin-bottom:14px;font-size:13px;color:var(--text-dim)">No project permissions set.</div>';
       }
 
       // Add permission input
-      html += '<div class="input-row">';
-      html += '<input class="input" id="new-perm-input" placeholder="Add permission, e.g. mcp__my_server__*" style="max-width:400px">';
+      html += '<div style="display:flex;gap:8px;align-items:center">';
+      html += '<input type="text" id="new-perm-input" placeholder="mcp__server_name__tool_name" style="max-width:380px">';
       html += '<button class="btn btn-primary btn-sm" onclick="App.tabs.settings._addPerm()">Add</button>';
       html += '</div>';
       html += '</div>';
@@ -108,7 +128,7 @@ App.tabs.settings = {
       html += '<div class="card-header"><span class="card-title">Raw Project Settings</span>';
       html += '<button class="btn btn-ghost btn-sm" onclick="App.tabs.settings._saveProjectJson()">Save Changes</button>';
       html += '</div>';
-      html += `<textarea class="input" id="project-json-editor" rows="12">${JSON.stringify(project, null, 2)}</textarea>`;
+      html += `<textarea class="json-editor" id="project-json-editor" rows="12">${JSON.stringify(project, null, 2)}</textarea>`;
       html += '</div>';
     } else {
       html += '<div class="empty-state">No project directory detected</div>';

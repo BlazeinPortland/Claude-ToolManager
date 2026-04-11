@@ -42,14 +42,18 @@ App.tabs.sessions = {
 
     // Table
     html += '<div class="table-wrap"><table>';
-    html += '<tr><th style="width:30px"></th><th>Title</th><th>Created</th><th>Last Activity</th><th>Status</th></tr>';
+    html += '<tr><th style="width:30px"></th><th>Title</th><th>Model</th><th>Project</th><th>Created</th><th>Last Activity</th><th>Status</th></tr>';
 
     for (const s of filtered) {
       const title = s.title || s.id;
       const truncTitle = title.length > 60 ? title.slice(0, 60) + '...' : title;
+      const model = (s.model || '').replace('claude-', '').replace(/-\d+$/, '');
+      const cwd = s.cwd ? s.cwd.split(/[\\/]/).pop() : '';
       html += `<tr>
         <td><input type="checkbox" class="checkbox" data-sid="${s.id}" onchange="App.tabs.sessions._onCheck()"></td>
         <td title="${this._esc(title)}">${this._esc(truncTitle)}</td>
+        <td style="white-space:nowrap;font-size:12px;color:var(--text-dim)">${this._esc(model)}</td>
+        <td title="${this._esc(s.cwd || '')}" style="font-size:12px;color:var(--text-dim)">${this._esc(cwd)}</td>
         <td style="white-space:nowrap">${App.fmtDateTime(s.created)}</td>
         <td style="white-space:nowrap">${App.timeAgo(s.lastActivity)}</td>
         <td><span class="card-badge ${s.archived ? 'badge-dim' : 'badge-green'}">${s.archived ? 'Archived' : 'Active'}</span></td>

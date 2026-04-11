@@ -14,19 +14,17 @@ App.tabs.dashboard = {
     const panel = document.getElementById('panel-dashboard');
     panel.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading dashboard...</div>';
 
-    const [stats, limits] = await Promise.all([
-      App.api('/api/dashboard/stats'),
-      App.api('/api/dashboard/rate-limits'),
-    ]);
+    // Fetch stats first (local, fast) — don't block on rate limits
+    const stats = await App.api('/api/dashboard/stats');
 
     let html = '';
 
-    // ── Rate Limits Section ──
-    html += '<div class="card">';
+    // ── Rate Limits Section (placeholder, filled async) ──
+    html += '<div class="card" id="rl-card">';
     html += '<div class="card-header"><span class="card-title">Rate Limits</span>';
-    html += `<span class="card-badge badge-dim" id="rl-refresh">${App.timeAgo(Date.now())}</span>`;
+    html += `<span class="card-badge badge-dim" id="rl-refresh">loading...</span>`;
     html += '</div>';
-    html += this._renderRateLimits(limits);
+    html += '<div id="rl-content"><div class="loading" style="padding:16px"><div class="spinner"></div></div></div>';
     html += '</div>';
 
     // ── Summary Cards ──
@@ -65,32 +63,26 @@ App.tabs.dashboard = {
     }
 
     panel.innerHTML = html;
+
+    // Load rate limits async (don't block page render)
+    this._loadRateLimits();
   },
 
   async _loadRateLimits() {
-    const limits = await App.api('/api/dashboard/rate-limits');
-    const card = document.querySelector('#panel-dashboard .card');
-    if (!card) return;
-    const header = card.querySelector('.card-header');
-    const body = card.querySelector('.gauge') ? card : null;
-    // Re-render just the rate limits portion
-    const inner = this._renderRateLimits(limits);
-    // Find gauges container
-    const gauges = card.querySelectorAll('.gauge');
-    if (gauges.length) {
-      // Replace content after header
-      const headerEl = card.querySelector('.card-header');
-      const temp = document.createElement('div');
-      temp.innerHTML = inner;
-      // Remove old gauges
-      gauges.forEach(g => g.remove());
-      // Also remove error/info messages
-      card.querySelectorAll('.empty-state').forEach(e => e.remove());
-      // Append new content
-      temp.childNodes.forEach(n => card.appendChild(n.cloneNode(true)));
+    try {
+      const limits = await App.api('/api/dashboard/rate-limits');
+      const container = document.getElementById('rl-content');
+      if (container) {
+        container.innerHTML = this._renderRateLimits(limits);
+      }
+      const badge = document.getElementById('rl-refresh');
+      if (badge) badge.textContent = App.timeAgo(Date.now());
+    } catch (e) {
+      const container = document.getElementById('rl-content');
+      if (container) {
+        container.innerHTML = '<div class="empty-state" style="padding:12px">Rate limit request failed</div>';
+      }
     }
-    const badge = document.getElementById('rl-refresh');
-    if (badge) badge.textContent = App.timeAgo(Date.now());
   },
 
   _renderRateLimits(data) {

@@ -4,17 +4,22 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Claude Tool Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
   <!-- Header -->
   <header class="header">
     <div class="header-left">
-      <h1 class="logo">Claude Tool Manager</h1>
+      <h1 class="logo">claude_tool_manager<span style="color:var(--text-muted);font-weight:400"> v2</span></h1>
     </div>
     <div class="header-right">
       <select id="project-select" class="project-select" title="Active project"></select>
       <span id="path-info" class="path-info"></span>
+      <button class="btn btn-ghost btn-sm header-btn" onclick="App.restartClaude()" title="Restart Claude Desktop to apply changes">Restart Claude</button>
+      <button class="btn btn-ghost btn-sm header-btn header-btn-danger" onclick="App.shutdownServer()" title="Shut down the Tool Manager server">Shutdown</button>
     </div>
   </header>
 

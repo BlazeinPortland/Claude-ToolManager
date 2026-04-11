@@ -7,14 +7,26 @@ const App = {
   config: null,    // Cached config/paths
 
   // ── API Client ──────────────────────────────────────────────────────
-  async api(path, body = null) {
-    const opts = { headers: { 'Content-Type': 'application/json' } };
+  async api(path, body = null, timeoutMs = 15000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const opts = {
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+    };
     if (body !== null) {
       opts.method = 'POST';
       opts.body = JSON.stringify(body);
     }
-    const resp = await fetch(path, opts);
-    return resp.json();
+    try {
+      const resp = await fetch(path, opts);
+      clearTimeout(timer);
+      return resp.json();
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.name === 'AbortError') return { error: 'Request timed out' };
+      return { error: e.message };
+    }
   },
 
   // ── Tab Router ──────────────────────────────────────────────────────
@@ -152,6 +164,46 @@ const App = {
     } else {
       this.toast(result.error || 'Failed to switch project', 'error');
     }
+  },
+
+  // ── Server Control ──────────────────────────────────────────────────
+  shutdownServer() {
+    this.modal(
+      'Shutdown Server',
+      '<p>Are you sure you want to shut down the Tool Manager server?</p><p style="color:var(--text-dim)">You will need to restart it manually.</p>',
+      [
+        { label: 'Cancel', class: 'btn-ghost' },
+        {
+          label: 'Shutdown', class: 'btn-danger',
+          action: async () => {
+            await this.api('/api/server/shutdown');
+            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:var(--text-dim);font-size:18px;background:var(--bg)">Server has been shut down.</div>';
+          },
+        },
+      ]
+    );
+  },
+
+  restartClaude() {
+    this.modal(
+      'Restart Claude Desktop',
+      '<p>This will close and relaunch Claude Desktop.</p><p style="color:var(--text-dim)">Any unsaved work in Claude will be lost. Config changes will take effect after restart.</p>',
+      [
+        { label: 'Cancel', class: 'btn-ghost' },
+        {
+          label: 'Restart Claude', class: 'btn-primary',
+          action: async () => {
+            this.toast('Restarting Claude Desktop...', 'info');
+            const result = await this.api('/api/claude/restart');
+            if (result.ok) {
+              this.toast('Claude Desktop is restarting', 'success');
+            } else {
+              this.toast(result.error || 'Failed to restart Claude', 'error');
+            }
+          },
+        },
+      ]
+    );
   },
 
   // ── Init ────────────────────────────────────────────────────────────

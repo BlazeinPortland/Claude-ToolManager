@@ -6,7 +6,7 @@ Run with: python tool-manager.py [--project <path>]
 Then open: http://localhost:9191
 """
 
-import json, os, shutil, sys, uuid, webbrowser, time, re
+import json, os, shutil, sys, uuid, webbrowser, time, re, subprocess, threading, signal
 from datetime import datetime
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -41,7 +41,11 @@ def _find_project_dir():
     return None
 
 PROJECT_DIR = _find_project_dir()
-SESSIONS_ROOT = Path(os.environ.get("APPDATA", "")) / "Claude" / "local-agent-mode-sessions"
+_APPDATA_CLAUDE = Path(os.environ.get("APPDATA", "")) / "Claude"
+SESSIONS_DIRS = [
+    _APPDATA_CLAUDE / "claude-code-sessions",
+    _APPDATA_CLAUDE / "local-agent-mode-sessions",
+]
 
 # ── MIME types ────────────────────────────────────────────────────────────────
 
@@ -478,34 +482,41 @@ def _parse_ts(val):
     return 0
 
 def get_sessions():
-    """Discover Cowork sessions from AppData."""
-    if not SESSIONS_ROOT.is_dir():
-        return []
+    """Discover Claude Code sessions from AppData."""
     sessions = []
-    try:
-        for top in SESSIONS_ROOT.iterdir():
-            if not top.is_dir():
-                continue
-            for child in top.iterdir():
-                if not child.is_dir():
+    seen_ids = set()
+    for sessions_root in SESSIONS_DIRS:
+        if not sessions_root.is_dir():
+            continue
+        try:
+            for top in sessions_root.iterdir():
+                if not top.is_dir():
                     continue
-                for jp in child.glob("local_*.json"):
-                    try:
-                        data = json.loads(jp.read_text(encoding="utf-8"))
-                        sid = jp.stem.replace("local_", "")
-                        sessions.append({
-                            "id": sid,
-                            "title": data.get("title", data.get("initialMessage", sid))[:120],
-                            "created": _parse_ts(data.get("createdAt", 0)),
-                            "lastActivity": _parse_ts(data.get("lastActivityAt", 0)),
-                            "archived": data.get("isArchived", False),
-                            "jsonPath": str(jp),
-                            "folderPath": str(jp.parent / sid) if (jp.parent / sid).is_dir() else "",
-                        })
-                    except (json.JSONDecodeError, OSError):
+                for child in top.iterdir():
+                    if not child.is_dir():
                         continue
-    except OSError:
-        pass
+                    for jp in child.glob("local_*.json"):
+                        try:
+                            data = json.loads(jp.read_text(encoding="utf-8"))
+                            sid = jp.stem.replace("local_", "")
+                            if sid in seen_ids:
+                                continue
+                            seen_ids.add(sid)
+                            sessions.append({
+                                "id": sid,
+                                "title": data.get("title", data.get("initialMessage", sid))[:120],
+                                "created": _parse_ts(data.get("createdAt", 0)),
+                                "lastActivity": _parse_ts(data.get("lastActivityAt", 0)),
+                                "archived": data.get("isArchived", False),
+                                "model": data.get("model", ""),
+                                "cwd": data.get("cwd", ""),
+                                "jsonPath": str(jp),
+                                "folderPath": str(jp.parent / sid) if (jp.parent / sid).is_dir() else "",
+                            })
+                        except (json.JSONDecodeError, OSError):
+                            continue
+        except OSError:
+            pass
     sessions.sort(key=lambda s: s["lastActivity"], reverse=True)
     return sessions
 
@@ -610,6 +621,40 @@ def delete_preset(preset_id):
     _write_json(_presets_file(), presets)
     return {"ok": True}
 
+# ── Server control ───────────────────────────────────────────────────────────
+
+_server_instance = None  # set in main()
+
+def shutdown_server():
+    """Shut down the web server gracefully."""
+    if _server_instance:
+        threading.Thread(target=_server_instance.shutdown, daemon=True).start()
+    return {"ok": True}
+
+def restart_claude_desktop():
+    """Kill Claude Desktop and relaunch it."""
+    try:
+        # Kill existing Claude Desktop processes (not claude-code CLI)
+        # Claude Desktop runs from WindowsApps; claude-code CLI from AppData/Roaming
+        result = subprocess.run(
+            ["powershell", "-Command",
+             "Get-Process -Name 'claude' -ErrorAction SilentlyContinue | "
+             "Where-Object { $_.Path -like '*WindowsApps*' } | "
+             "Stop-Process -Force"],
+            capture_output=True, text=True
+        )
+        time.sleep(2)
+
+        # Relaunch via Windows Store app protocol
+        subprocess.Popen(
+            ["powershell", "-Command",
+             "Start-Process 'shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude'"],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 # ── HTTP Server ───────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -684,7 +729,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/config/paths": lambda: {
                 "global": str(GLOBAL_DIR),
                 "project": str(PROJECT_DIR) if PROJECT_DIR else None,
-                "sessions": str(SESSIONS_ROOT),
+                "sessions": [str(d) for d in SESSIONS_DIRS],
             },
             "/api/projects": get_projects,
             "/api/dashboard/stats": get_dashboard_stats,
@@ -769,6 +814,14 @@ class Handler(BaseHTTPRequestHandler):
                 result = delete_preset(body.get("id", ""))
                 self._send_json(result)
 
+            elif path == "/api/server/shutdown":
+                self._send_json({"ok": True, "message": "Server shutting down..."})
+                shutdown_server()
+
+            elif path == "/api/claude/restart":
+                result = restart_claude_desktop()
+                self._send_json(result)
+
             else:
                 self.send_error(404, "Not Found")
 
@@ -782,12 +835,14 @@ def main():
     print("  Claude Tool Manager v2")
     print(f"  Global config:  {GLOBAL_DIR}")
     print(f"  Project config: {PROJECT_DIR or '(none)'}")
-    print(f"  Sessions root:  {SESSIONS_ROOT}")
+    print(f"  Sessions dirs:  {', '.join(str(d) for d in SESSIONS_DIRS)}")
     print(f"  Static files:   {STATIC_DIR}")
     print()
 
+    global _server_instance
     try:
-        server = HTTPServer(("127.0.0.1", PORT), Handler)
+        server = HTTPServer(("0.0.0.0", PORT), Handler)
+        _server_instance = server
     except OSError as e:
         print(f"  ERROR: Could not bind port {PORT}: {e}")
         sys.exit(1)
