@@ -1,1162 +1,808 @@
 #!/usr/bin/env python3
 """
-Claude Tool Manager
-Manage Claude Code skills & MCP permissions, with Cowork guidance and session presets.
-Run with: python tool-manager.py
+Claude Tool Manager v2
+Full-featured management dashboard for Claude Desktop settings.
+Run with: python tool-manager.py [--project <path>]
 Then open: http://localhost:9191
 """
 
-import json, os, re, shutil, sys, uuid, webbrowser
+import json, os, shutil, sys, uuid, webbrowser, time, re
 from datetime import datetime
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
+import urllib.request, urllib.error, ssl
 
-# ── Config paths ──────────────────────────────────────────────────────────────
-SKILLS_DIR        = Path(r"C:\Software\.claude\skills")
-SETTINGS_FILE     = Path(r"C:\Software\.claude\settings.local.json")
-COWORK_STATE_FILE = Path(r"C:\Software\.claude\cowork-state.json")
-PRESETS_FILE      = Path(r"C:\Software\.claude\presets.json")
-GLOBAL_SETTINGS_FILE = Path.home() / ".claude" / "settings.json"
-SESSIONS_ROOT = Path(os.environ.get("APPDATA", "")) / "Claude" / "local-agent-mode-sessions"
+# ── Path discovery ────────────────────────────────────────────────────────────
+
+GLOBAL_DIR = Path.home() / ".claude"
+SCRIPT_DIR = Path(__file__).resolve().parent
+STATIC_DIR = SCRIPT_DIR / "static"
 PORT = 9191
 
-# ── Known MCPs ────────────────────────────────────────────────────────────────
-KNOWN_MCPS = {
-    "mcp__glance":            {"name": "Glance",           "icon": "🔍", "desc": "Automated browser testing & visual QA"},
-    "mcp__claude_ai_Canva":   {"name": "Canva",            "icon": "🎨", "desc": "Create, edit & generate Canva designs"},
-    "mcp__notebooklm-mcp":    {"name": "NotebookLM",       "icon": "📓", "desc": "Query your Google NotebookLM notebooks"},
-    "mcp__Desktop_Commander": {"name": "Desktop Commander","icon": "🖥️", "desc": "Read/write files & run processes on your PC"},
-    "mcp__stitch":            {"name": "Stitch",           "icon": "✏️", "desc": "Generate UI screen mockups from text"},
-    "mcp___21st-dev_magic":   {"name": "21st.dev Magic",   "icon": "✨", "desc": "Build & refine React/UI components"},
-    "mcp__bf349c11":          {"name": "Microsoft Docs",   "icon": "📖", "desc": "Search Microsoft documentation"},
-    "mcp__scheduled-tasks":   {"name": "Scheduled Tasks",  "icon": "🗓️", "desc": "Create & manage automated tasks"},
-    "mcp__session_info":      {"name": "Session Info",     "icon": "💬", "desc": "Browse & read previous Cowork sessions"},
-    "mcp__cowork":            {"name": "Cowork Tools",     "icon": "🤝", "desc": "File delete, present files, request directory"},
-    "mcp__mcp-registry":      {"name": "MCP Registry",     "icon": "🔌", "desc": "Search & install new MCP connectors"},
-    "mcp__plugins":           {"name": "Plugins",          "icon": "🧩", "desc": "Search & install Cowork plugins"},
-    "mcp__4904f7a1":          {"name": "Google Calendar",  "icon": "📅", "desc": "Manage calendar events & find free time"},
-    "mcp__78178dcd":          {"name": "Gmail",            "icon": "📧", "desc": "Read, search & draft emails"},
-    "mcp__Claude_in_Chrome":  {"name": "Claude in Chrome", "icon": "🌐", "desc": "Control Chrome browser for automation"},
+def _find_project_dir():
+    """Find project .claude/ dir: --project arg, or walk up from cwd."""
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == "--project" and i < len(sys.argv) - 1:
+            p = Path(sys.argv[i + 1]) / ".claude"
+            if p.is_dir():
+                return p
+    # Walk up from script dir
+    d = SCRIPT_DIR
+    while d != d.parent:
+        candidate = d / ".claude"
+        if candidate.is_dir() and (candidate / "settings.local.json").exists():
+            return candidate
+        d = d.parent
+    # Fallback: C:\Software\.claude
+    fallback = Path(r"C:\Software\.claude")
+    if fallback.is_dir():
+        return fallback
+    return None
+
+PROJECT_DIR = _find_project_dir()
+SESSIONS_ROOT = Path(os.environ.get("APPDATA", "")) / "Claude" / "local-agent-mode-sessions"
+
+# ── MIME types ────────────────────────────────────────────────────────────────
+
+MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css":  "text/css; charset=utf-8",
+    ".js":   "application/javascript; charset=utf-8",
+    ".json": "application/json",
+    ".svg":  "image/svg+xml",
+    ".ico":  "image/x-icon",
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
 }
 
-# ── Cowork connectors ─────────────────────────────────────────────────────────
+# ── Cowork connector metadata ────────────────────────────────────────────────
+
 COWORK_CONNECTORS = [
-    {"id": "desktop-commander", "name": "Desktop Commander", "icon": "🖥️", "desc": "Read/write files & run processes on your PC",   "how": "Settings → Connectors → Desktop Commander → Enable",              "cowork": True},
-    {"id": "google-calendar",   "name": "Google Calendar",   "icon": "📅", "desc": "Manage calendar events & find free time",         "how": "Settings → Connectors → Google Calendar → Connect Google Account", "cowork": True},
-    {"id": "gmail",             "name": "Gmail",             "icon": "📧", "desc": "Read, search & draft emails",                    "how": "Settings → Connectors → Gmail → Connect Google Account",           "cowork": True},
-    {"id": "claude-in-chrome",  "name": "Claude in Chrome",  "icon": "🌐", "desc": "Control your Chrome browser for automation",     "how": "Settings → Connectors → Claude in Chrome → Enable",               "cowork": True},
-    {"id": "stitch",            "name": "Stitch",            "icon": "✏️", "desc": "Generate UI mockups from text descriptions",     "how": "Settings → Connectors → Stitch → Enable",                        "cowork": True},
-    {"id": "21st-magic",        "name": "21st.dev Magic",    "icon": "✨", "desc": "Build & refine React/UI components",             "how": "Settings → Connectors → 21st.dev → Enable",                       "cowork": True},
-    {"id": "microsoft-docs",    "name": "Microsoft Docs",    "icon": "📖", "desc": "Search Microsoft documentation",                 "how": "Settings → Connectors → Microsoft Docs → Enable",                 "cowork": True},
-    {"id": "glance",            "name": "Glance",            "icon": "🔍", "desc": "Automated browser testing & visual QA",          "how": "Settings → Connectors → Glance → Enable",                         "cowork": True},
-    {"id": "scheduled-tasks",   "name": "Scheduled Tasks",   "icon": "🗓️", "desc": "Create & manage automated tasks",               "how": "Settings → Connectors → Scheduled Tasks → Enable",                "cowork": True},
-    {"id": "canva",             "name": "Canva",             "icon": "🎨", "desc": "Create, edit & generate Canva designs",          "how": "Available via the Code tab in this same Claude desktop app",       "cowork": False},
-    {"id": "notebooklm",        "name": "NotebookLM",        "icon": "📓", "desc": "Query your Google NotebookLM notebooks",         "how": "Available via the Code tab in this same Claude desktop app",       "cowork": False},
+    {"id": "desktop-commander", "name": "Desktop Commander", "icon": "\U0001f5a5\ufe0f", "desc": "Read/write files & run processes", "cowork": True},
+    {"id": "google-calendar",   "name": "Google Calendar",   "icon": "\U0001f4c5", "desc": "Manage calendar events & find free time", "cowork": True},
+    {"id": "gmail",             "name": "Gmail",             "icon": "\U0001f4e7", "desc": "Read, search & draft emails", "cowork": True},
+    {"id": "claude-in-chrome",  "name": "Claude in Chrome",  "icon": "\U0001f310", "desc": "Control Chrome browser for automation", "cowork": True},
+    {"id": "stitch",            "name": "Stitch",            "icon": "\u270f\ufe0f", "desc": "Generate UI mockups from text", "cowork": True},
+    {"id": "21st-magic",        "name": "21st.dev Magic",    "icon": "\u2728", "desc": "Build & refine React/UI components", "cowork": True},
+    {"id": "microsoft-docs",    "name": "Microsoft Docs",    "icon": "\U0001f4d6", "desc": "Search Microsoft documentation", "cowork": True},
+    {"id": "glance",            "name": "Glance",            "icon": "\U0001f50d", "desc": "Browser testing & visual QA", "cowork": True},
+    {"id": "scheduled-tasks",   "name": "Scheduled Tasks",   "icon": "\U0001f5d3\ufe0f", "desc": "Create & manage automated tasks", "cowork": True},
+    {"id": "canva",             "name": "Canva",             "icon": "\U0001f3a8", "desc": "Create & edit Canva designs", "cowork": False},
+    {"id": "notebooklm",        "name": "NotebookLM",        "icon": "\U0001f4d3", "desc": "Query NotebookLM notebooks", "cowork": False},
+    {"id": "computer-use",      "name": "Computer Use",      "icon": "\U0001f5b1\ufe0f", "desc": "Desktop mouse & keyboard control", "cowork": True},
+    {"id": "nanobanana-mcp",    "name": "Nanobanana",        "icon": "\U0001f34c", "desc": "AI image generation via Gemini", "cowork": False},
 ]
 
-COWORK_STATE_DEFAULTS = {
-    "desktop-commander": True, "google-calendar": True, "gmail": True,
-    "claude-in-chrome": True,  "stitch": True,          "21st-magic": True,
-    "microsoft-docs": True,    "glance": True,           "scheduled-tasks": True,
-    "canva": False,            "notebooklm": False,
-}
+COWORK_STATE_DEFAULTS = {c["id"]: False for c in COWORK_CONNECTORS}
 
-# ── Starter presets ───────────────────────────────────────────────────────────
+# ── Default presets ───────────────────────────────────────────────────────────
+
 DEFAULT_PRESETS = [
     {
-        "id": "netscaler-citrix",
-        "name": "NetScaler / Citrix Work",
-        "icon": "🔧",
-        "desc": "Infrastructure & NetScaler config, CLI work, HA validation, Duo/JWT troubleshooting",
-        "cowork": {
-            "desktop-commander": True,  "google-calendar": False, "gmail": False,
-            "claude-in-chrome": False,  "stitch": False,          "21st-magic": False,
-            "microsoft-docs": True,     "glance": True,           "scheduled-tasks": True,
-            "canva": False,             "notebooklm": True,
-        },
-        "mcps": {
-            "mcp__Desktop_Commander": True,  "mcp__bf349c11": True,
-            "mcp__glance": True,             "mcp__notebooklm-mcp": True,
-            "mcp__scheduled-tasks": True,    "mcp__session_info": True,
-            "mcp__cowork": True,             "mcp__mcp-registry": False,
-            "mcp__plugins": False,           "mcp__4904f7a1": False,
-            "mcp__78178dcd": False,          "mcp__Claude_in_Chrome": False,
-            "mcp__stitch": False,            "mcp___21st-dev_magic": False,
-            "mcp__claude_ai_Canva": False,
-        },
-        "skills": {"ui-ux-pro-max": False},
+        "id": "netscaler-citrix", "name": "NetScaler / Citrix Work", "icon": "\U0001f527",
+        "desc": "Infrastructure, CLI, HA validation, Duo troubleshooting",
+        "builtin": True,
+        "cowork": {"desktop-commander": True, "microsoft-docs": True, "glance": True, "scheduled-tasks": True, "notebooklm": True},
+        "mcps": {},
+        "skills_global": {},
+        "skills_project": {},
+        "plugins": {},
     },
     {
-        "id": "website-design",
-        "name": "Website & Design",
-        "icon": "🎨",
-        "desc": "Landing pages, performer sites, HTML/CSS work, image editing, UI mockups",
-        "cowork": {
-            "desktop-commander": True,  "google-calendar": False, "gmail": False,
-            "claude-in-chrome": True,   "stitch": True,           "21st-magic": True,
-            "microsoft-docs": False,    "glance": True,           "scheduled-tasks": False,
-            "canva": True,              "notebooklm": False,
-        },
-        "mcps": {
-            "mcp__Desktop_Commander": True,  "mcp__Claude_in_Chrome": True,
-            "mcp__stitch": True,             "mcp___21st-dev_magic": True,
-            "mcp__glance": True,             "mcp__claude_ai_Canva": True,
-            "mcp__session_info": True,       "mcp__cowork": True,
-            "mcp__mcp-registry": False,      "mcp__plugins": False,
-            "mcp__4904f7a1": False,          "mcp__78178dcd": False,
-            "mcp__bf349c11": False,          "mcp__notebooklm-mcp": False,
-            "mcp__scheduled-tasks": False,
-        },
-        "skills": {"ui-ux-pro-max": True},
+        "id": "website-design", "name": "Website & Design", "icon": "\U0001f3a8",
+        "desc": "Landing pages, HTML/CSS, UI mockups, image editing",
+        "builtin": True,
+        "cowork": {"desktop-commander": True, "claude-in-chrome": True, "stitch": True, "21st-magic": True, "glance": True, "canva": True},
+        "mcps": {},
+        "skills_global": {},
+        "skills_project": {},
+        "plugins": {},
     },
     {
-        "id": "general",
-        "name": "Default (Bare Minimum)",
-        "icon": "🌱",
-        "desc": "Core Claude tools only — no external connectors. A clean slate to build from.",
-        "cowork": {
-            "desktop-commander": False, "google-calendar": False, "gmail": False,
-            "claude-in-chrome": False,  "stitch": False,          "21st-magic": False,
-            "microsoft-docs": False,    "glance": False,           "scheduled-tasks": False,
-            "canva": False,             "notebooklm": False,
-        },
-        "mcps": {
-            "mcp__Desktop_Commander":  False, "mcp__claude_ai_Canva":  False,
-            "mcp__notebooklm-mcp":     False, "mcp__stitch":           False,
-            "mcp___21st-dev_magic":    False, "mcp__bf349c11":         False,
-            "mcp__scheduled-tasks":    False, "mcp__session_info":     True,
-            "mcp__cowork":             True,  "mcp__mcp-registry":     True,
-            "mcp__plugins":            True,  "mcp__4904f7a1":         False,
-            "mcp__78178dcd":           False, "mcp__Claude_in_Chrome": False,
-            "mcp__glance":             False,
-        },
-        "skills": {"ui-ux-pro-max": False},
+        "id": "general", "name": "General / Minimal", "icon": "\u26a1",
+        "desc": "Core Claude only — all extras disabled",
+        "builtin": True,
+        "cowork": {},
+        "mcps": {},
+        "skills_global": {},
+        "skills_project": {},
+        "plugins": {},
     },
 ]
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── JSON helpers ──────────────────────────────────────────────────────────────
 
-def read_settings():
-    if SETTINGS_FILE.exists():
-        try:
-            return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {"permissions": {"allow": []}}
+def _read_json(path, default=None):
+    """Read a JSON file, return default on missing/corrupt."""
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return default if default is not None else {}
 
-def write_settings(data):
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+def _write_json(path, data):
+    """Write JSON with pretty-print, create parent dirs."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
-def get_skills():
-    skills = []
-    if not SKILLS_DIR.exists():
-        return skills
-    for item in sorted(SKILLS_DIR.iterdir()):
-        if not item.is_dir():
-            continue
-        skill_md       = item / "SKILL.md"
-        skill_disabled = item / "SKILL.md.disabled"
-        enabled  = skill_md.exists()
-        if not (enabled or skill_disabled.exists()):
-            continue
-        src  = skill_md if enabled else skill_disabled
-        desc = ""
-        try:
-            lines = src.read_text(encoding="utf-8", errors="ignore").splitlines()
-            for i, line in enumerate(lines):
-                if line.startswith("# ") and i == 0:
-                    continue
-                if line.strip() and not line.startswith("#"):
-                    desc = line.strip()[:120]
-                    break
-        except Exception:
-            pass
-        skills.append({"id": item.name, "name": item.name.replace("-"," ").replace("_"," ").title(),
-                        "enabled": enabled, "desc": desc})
-    return skills
+# ── Path helpers ──────────────────────────────────────────────────────────────
 
-def toggle_skill(skill_id, enable):
-    p   = SKILLS_DIR / skill_id
-    md  = p / "SKILL.md"
-    dis = p / "SKILL.md.disabled"
-    if enable:
-        if dis.exists(): dis.rename(md); return True, f"{skill_id} enabled"
-        return False, "SKILL.md.disabled not found"
-    else:
-        if md.exists(): md.rename(dis); return True, f"{skill_id} disabled"
-        return False, "SKILL.md not found"
+def _decode_project_dir_name(name):
+    """Convert ~/.claude/projects/ dir name to real path. 'C--Software' -> 'C:\\Software'"""
+    # Format: 'C--Software' or 'C--Users-Kara' — first char is drive, -- separates drive from path, - separates path segments
+    if len(name) >= 3 and name[0].isalpha() and name[1:3] == "--":
+        drive = name[0].upper()
+        rest = name[3:].replace("-", "\\")
+        return f"{drive}:\\{rest}"
+    return name
 
-def read_global_settings():
-    """Read ~/.claude/settings.json (global Claude Code settings)."""
-    if GLOBAL_SETTINGS_FILE.exists():
-        try:
-            return json.loads(GLOBAL_SETTINGS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-def get_mcp_permissions():
-    """
-    Auto-discover every installed MCP from:
-      1. mcpServers keys in settings.local.json  (project-level)
-      2. mcpServers keys in ~/.claude/settings.json  (global / user-installed)
-      3. mcp__* entries already in permissions.allow
-    Then enrich with KNOWN_MCPS metadata where available.
-    Unknown MCPs appear with a generic icon so nothing is ever hidden.
-    """
-    local_cfg  = read_settings()
-    global_cfg = read_global_settings()
-
-    # Collect all installed MCP server names -> normalise to mcp__<name> key
-    installed_keys = set()
-    for cfg in (local_cfg, global_cfg):
-        for server_name in cfg.get("mcpServers", {}).keys():
-            installed_keys.add("mcp__" + server_name)
-
-    # Collect currently-enabled keys from permissions.allow
-    allow = local_cfg.get("permissions", {}).get("allow", [])
-    enabled_keys = set()
-    for entry in allow:
-        if entry.startswith("mcp__"):
-            parts = entry.split("__")
-            if len(parts) >= 2:
-                enabled_keys.add("mcp__" + parts[1])
-
-    # Union: KNOWN_MCPS + installed + enabled (so nothing is ever missing)
-    all_keys = set(KNOWN_MCPS.keys()) | installed_keys | enabled_keys
-
+def get_projects():
+    """List available projects from ~/.claude/projects/."""
+    projects_dir = GLOBAL_DIR / "projects"
+    if not projects_dir.is_dir():
+        return []
     result = []
-    for key in sorted(all_keys, key=lambda k: (KNOWN_MCPS.get(k, {}).get("name", k).lower())):
-        if key in KNOWN_MCPS:
-            meta = KNOWN_MCPS[key]
-            result.append({"key": key, "name": meta["name"], "icon": meta["icon"],
-                            "desc": meta["desc"], "enabled": key in enabled_keys})
-        else:
-            display = key.replace("mcp__", "").replace("_", " ").replace("-", " ").title()
-            result.append({"key": key, "name": display, "icon": "🔧",
-                            "desc": "MCP connector (auto-discovered)", "enabled": key in enabled_keys})
+    for d in sorted(projects_dir.iterdir()):
+        if d.is_dir():
+            real_path = _decode_project_dir_name(d.name)
+            project_claude = Path(real_path) / ".claude"
+            result.append({"id": d.name, "path": real_path, "has_settings": (project_claude / "settings.local.json").exists()})
     return result
 
-def toggle_mcp(mcp_key, enable):
-    settings = read_settings()
-    allow    = settings.setdefault("permissions", {}).setdefault("allow", [])
-    wildcard = mcp_key + "__*"
-    if enable:
-        if wildcard not in allow: allow.append(wildcard)
+# ── Dashboard endpoints ───────────────────────────────────────────────────────
+
+def get_dashboard_stats():
+    """Read stats-cache.json for usage analytics."""
+    stats = _read_json(GLOBAL_DIR / "stats-cache.json")
+    if not stats:
+        return {"error": "stats-cache.json not found"}
+    return stats
+
+_rate_limit_cache = {"data": None, "time": 0}
+
+def get_rate_limits():
+    """Proxy rate limit request to Anthropic API using local OAuth token."""
+    now = time.time()
+    if _rate_limit_cache["data"] and (now - _rate_limit_cache["time"]) < 30:
+        return _rate_limit_cache["data"]
+
+    creds = _read_json(GLOBAL_DIR / ".credentials.json")
+    oauth = creds.get("claudeAiOauth", {})
+    token = oauth.get("accessToken", "")
+    if not token:
+        return {"error": "No OAuth token found in .credentials.json"}
+
+    try:
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(
+            "https://api.anthropic.com/api/oauth/usage",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            _rate_limit_cache["data"] = data
+            _rate_limit_cache["time"] = now
+            return data
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}: {e.reason}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+# ── Settings endpoints ────────────────────────────────────────────────────────
+
+def get_global_settings():
+    return _read_json(GLOBAL_DIR / "settings.json")
+
+def save_global_settings(data):
+    _write_json(GLOBAL_DIR / "settings.json", data)
+
+def get_project_settings():
+    if not PROJECT_DIR:
+        return {"error": "No project directory found"}
+    return _read_json(PROJECT_DIR / "settings.local.json", {"permissions": {"allow": []}})
+
+def save_project_settings(data):
+    if not PROJECT_DIR:
+        return {"error": "No project directory found"}
+    _write_json(PROJECT_DIR / "settings.local.json", data)
+
+def get_mcp_servers():
+    """List MCP servers from global settings with metadata."""
+    gs = get_global_settings()
+    servers = gs.get("mcpServers", {})
+    result = []
+    for name, config in servers.items():
+        result.append({
+            "name": name,
+            "command": config.get("command", ""),
+            "args": config.get("args", []),
+            "env_count": len(config.get("env", {})),
+            "config": config,
+        })
+    return result
+
+def toggle_project_permission(entry, enable):
+    """Add or remove a permission entry in project settings."""
+    settings = get_project_settings()
+    if isinstance(settings, dict) and "error" in settings:
+        return settings
+    perms = settings.setdefault("permissions", {}).setdefault("allow", [])
+    if enable and entry not in perms:
+        perms.append(entry)
+    elif not enable:
+        settings["permissions"]["allow"] = [p for p in perms if p != entry]
+    save_project_settings(settings)
+    return {"ok": True}
+
+# ── Skills endpoints ──────────────────────────────────────────────────────────
+
+def _parse_skill_md(path):
+    """Parse SKILL.md for frontmatter name/description."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return {}, ""
+
+    frontmatter = {}
+    body_lines = []
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            for line in parts[1].strip().splitlines():
+                if ":" in line:
+                    key, val = line.split(":", 1)
+                    frontmatter[key.strip()] = val.strip().strip('"').strip("'")
+            body_lines = parts[2].strip().splitlines()
     else:
-        settings["permissions"]["allow"] = [e for e in allow if not e.startswith(mcp_key + "__")]
-    write_settings(settings)
-    return True, f"{mcp_key} {'enabled' if enable else 'disabled'}"
+        body_lines = text.strip().splitlines()
+
+    # First non-empty, non-header line as description fallback
+    desc = frontmatter.get("description", "")
+    if not desc:
+        for line in body_lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                desc = stripped[:200]
+                break
+    return frontmatter, desc
+
+def get_global_skills():
+    """Scan ~/.claude/skills/ and skills-disabled/ for global skills."""
+    skills_dir = GLOBAL_DIR / "skills"
+    disabled_dir = GLOBAL_DIR / "skills-disabled"
+    result = []
+
+    for d in (skills_dir, disabled_dir):
+        if not d.is_dir():
+            continue
+        enabled = (d == skills_dir)
+        for child in sorted(d.iterdir()):
+            if not child.is_dir():
+                continue
+            skill_file = child / "SKILL.md"
+            if not skill_file.exists():
+                skill_file = child / "SKILL.md.disabled"
+            fm, desc = _parse_skill_md(skill_file) if skill_file.exists() else ({}, "")
+            result.append({
+                "id": child.name,
+                "name": fm.get("name", child.name.replace("-", " ").title()),
+                "enabled": enabled,
+                "desc": desc,
+                "scope": "global",
+            })
+    return result
+
+def toggle_global_skill(skill_id, enable):
+    """Move skill dir between skills/ and skills-disabled/."""
+    skills_dir = GLOBAL_DIR / "skills"
+    disabled_dir = GLOBAL_DIR / "skills-disabled"
+
+    if enable:
+        src = disabled_dir / skill_id
+        dst = skills_dir / skill_id
+    else:
+        src = skills_dir / skill_id
+        dst = disabled_dir / skill_id
+
+    if not src.is_dir():
+        return {"ok": False, "error": f"Skill directory not found: {src}"}
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dst))
+    return {"ok": True}
+
+def get_project_skills():
+    """Scan project .claude/skills/ for project-level skills."""
+    if not PROJECT_DIR:
+        return []
+    skills_dir = PROJECT_DIR / "skills"
+    if not skills_dir.is_dir():
+        return []
+    result = []
+    for child in sorted(skills_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        skill_file = child / "SKILL.md"
+        disabled_file = child / "SKILL.md.disabled"
+        enabled = skill_file.exists()
+        active_file = skill_file if enabled else disabled_file
+        fm, desc = _parse_skill_md(active_file) if active_file.exists() else ({}, "")
+        result.append({
+            "id": child.name,
+            "name": fm.get("name", child.name.replace("-", " ").title()),
+            "enabled": enabled,
+            "desc": desc,
+            "scope": "project",
+        })
+    return result
+
+def toggle_project_skill(skill_id, enable):
+    """Toggle project skill via SKILL.md rename."""
+    if not PROJECT_DIR:
+        return {"ok": False, "error": "No project directory"}
+    skill_dir = PROJECT_DIR / "skills" / skill_id
+    if not skill_dir.is_dir():
+        return {"ok": False, "error": f"Skill not found: {skill_id}"}
+
+    src = skill_dir / ("SKILL.md.disabled" if enable else "SKILL.md")
+    dst = skill_dir / ("SKILL.md" if enable else "SKILL.md.disabled")
+    if src.exists():
+        src.rename(dst)
+        return {"ok": True}
+    return {"ok": False, "error": f"Source file not found: {src}"}
+
+# ── Plugins endpoints ─────────────────────────────────────────────────────────
+
+def get_plugins():
+    """Merge installed plugins, enabled state, blocklist, and marketplaces."""
+    installed = _read_json(GLOBAL_DIR / "plugins" / "installed_plugins.json", {"plugins": {}})
+    gs = get_global_settings()
+    enabled_map = gs.get("enabledPlugins", {})
+    blocklist = _read_json(GLOBAL_DIR / "plugins" / "blocklist.json", {"plugins": []})
+    marketplaces_file = _read_json(GLOBAL_DIR / "plugins" / "known_marketplaces.json", {})
+    extra_mkts = gs.get("extraKnownMarketplaces", {})
+
+    plugins = []
+    for pid, versions in installed.get("plugins", {}).items():
+        info = versions[0] if versions else {}
+        name_parts = pid.split("@")
+        plugins.append({
+            "id": pid,
+            "name": name_parts[0] if name_parts else pid,
+            "marketplace": name_parts[1] if len(name_parts) > 1 else "unknown",
+            "version": info.get("version", "unknown"),
+            "scope": info.get("scope", "user"),
+            "installedAt": info.get("installedAt", ""),
+            "lastUpdated": info.get("lastUpdated", ""),
+            "enabled": enabled_map.get(pid, True),
+        })
+
+    blocked = blocklist.get("plugins", [])
+
+    mkts = {}
+    for name, data in {**marketplaces_file, **extra_mkts}.items():
+        source = data.get("source", data)
+        mkts[name] = {
+            "name": name,
+            "sourceType": source.get("source", "unknown"),
+            "repo": source.get("repo", source.get("url", "")),
+            "lastUpdated": data.get("lastUpdated", ""),
+        }
+
+    return {"plugins": plugins, "blocklist": blocked, "marketplaces": mkts}
+
+def toggle_plugin(plugin_id, enable):
+    """Toggle enabledPlugins in global settings.json."""
+    gs = get_global_settings()
+    ep = gs.setdefault("enabledPlugins", {})
+    ep[plugin_id] = enable
+    save_global_settings(gs)
+    return {"ok": True}
+
+# ── Connectors endpoints ─────────────────────────────────────────────────────
+
+def _parse_connector_name(server_name):
+    """Parse 'plugin:design:notion|abc123' -> 'Notion'."""
+    name = server_name.split("|")[0]  # strip instance ID
+    parts = name.split(":")
+    if len(parts) >= 3:
+        return parts[-1].replace("-", " ").title()
+    return name.replace("-", " ").title()
+
+def get_connectors():
+    """Merge OAuth status, auth-cache, and cowork state."""
+    creds = _read_json(GLOBAL_DIR / ".credentials.json")
+    auth_cache = _read_json(GLOBAL_DIR / "mcp-needs-auth-cache.json")
+    cowork_state = get_cowork_state()
+
+    # OAuth connectors from credentials
+    oauth_entries = creds.get("mcpOAuth", {})
+    oauth_connectors = []
+    if isinstance(oauth_entries, dict):
+        for server_name, entry in oauth_entries.items():
+            if isinstance(entry, dict):
+                has_token = bool(entry.get("accessToken"))
+                expires = entry.get("expiresAt", 0)
+                is_valid = has_token and (expires > time.time() * 1000 if expires else False)
+                oauth_connectors.append({
+                    "serverName": server_name,
+                    "displayName": _parse_connector_name(server_name),
+                    "authenticated": is_valid,
+                    "hasToken": has_token,
+                    "needsAuth": server_name in auth_cache or any(
+                        server_name.startswith(k) for k in auth_cache
+                    ),
+                })
+
+    # Cowork connectors with state
+    cowork_list = []
+    for c in COWORK_CONNECTORS:
+        cowork_list.append({
+            **c,
+            "active": cowork_state.get(c["id"], False),
+        })
+
+    return {"oauth": oauth_connectors, "cowork": cowork_list}
 
 def get_cowork_state():
-    if COWORK_STATE_FILE.exists():
-        try:
-            return json.loads(COWORK_STATE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    COWORK_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    COWORK_STATE_FILE.write_text(json.dumps(COWORK_STATE_DEFAULTS, indent=2), encoding="utf-8")
-    return dict(COWORK_STATE_DEFAULTS)
+    """Read cowork-state.json."""
+    if not PROJECT_DIR:
+        return COWORK_STATE_DEFAULTS.copy()
+    state = _read_json(PROJECT_DIR / "cowork-state.json")
+    if not state:
+        return COWORK_STATE_DEFAULTS.copy()
+    return state
 
-def set_cowork_active(connector_id, active):
+def toggle_cowork(connector_id, active):
+    """Toggle a cowork connector state."""
+    if not PROJECT_DIR:
+        return {"ok": False, "error": "No project directory"}
     state = get_cowork_state()
     state[connector_id] = active
-    COWORK_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    COWORK_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    return True, f"{connector_id} marked {'active' if active else 'inactive'}"
+    _write_json(PROJECT_DIR / "cowork-state.json", state)
+    return {"ok": True}
 
-# ── Preset helpers ────────────────────────────────────────────────────────────
+# ── Sessions endpoints ────────────────────────────────────────────────────────
+
+def _parse_ts(val):
+    """Convert timestamp to milliseconds int."""
+    if isinstance(val, (int, float)):
+        return int(val) if val > 1e12 else int(val * 1000)
+    if isinstance(val, str):
+        try:
+            dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000)
+        except (ValueError, OSError):
+            return 0
+    return 0
+
+def get_sessions():
+    """Discover Cowork sessions from AppData."""
+    if not SESSIONS_ROOT.is_dir():
+        return []
+    sessions = []
+    try:
+        for top in SESSIONS_ROOT.iterdir():
+            if not top.is_dir():
+                continue
+            for child in top.iterdir():
+                if not child.is_dir():
+                    continue
+                for jp in child.glob("local_*.json"):
+                    try:
+                        data = json.loads(jp.read_text(encoding="utf-8"))
+                        sid = jp.stem.replace("local_", "")
+                        sessions.append({
+                            "id": sid,
+                            "title": data.get("title", data.get("initialMessage", sid))[:120],
+                            "created": _parse_ts(data.get("createdAt", 0)),
+                            "lastActivity": _parse_ts(data.get("lastActivityAt", 0)),
+                            "archived": data.get("isArchived", False),
+                            "jsonPath": str(jp),
+                            "folderPath": str(jp.parent / sid) if (jp.parent / sid).is_dir() else "",
+                        })
+                    except (json.JSONDecodeError, OSError):
+                        continue
+    except OSError:
+        pass
+    sessions.sort(key=lambda s: s["lastActivity"], reverse=True)
+    return sessions
+
+def delete_sessions(ids):
+    """Delete session files and folders."""
+    all_sessions = get_sessions()
+    session_map = {s["id"]: s for s in all_sessions}
+    deleted = 0
+    for sid in ids:
+        s = session_map.get(sid)
+        if not s:
+            continue
+        try:
+            jp = Path(s["jsonPath"])
+            if jp.exists():
+                jp.unlink()
+            if s["folderPath"]:
+                fp = Path(s["folderPath"])
+                if fp.is_dir():
+                    shutil.rmtree(fp, ignore_errors=True)
+            deleted += 1
+        except OSError:
+            continue
+    return {"ok": True, "deleted": deleted}
+
+# ── Presets endpoints ─────────────────────────────────────────────────────────
+
+def _presets_file():
+    if PROJECT_DIR:
+        return PROJECT_DIR / "presets.json"
+    return GLOBAL_DIR / "presets.json"
 
 def get_presets():
-    if PRESETS_FILE.exists():
-        try:
-            return json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    # First run — seed with defaults
-    PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PRESETS_FILE.write_text(json.dumps(DEFAULT_PRESETS, indent=2), encoding="utf-8")
-    return list(DEFAULT_PRESETS)
+    presets = _read_json(_presets_file(), [])
+    if not presets:
+        presets = DEFAULT_PRESETS[:]
+        _write_json(_presets_file(), presets)
+    return presets
 
-def save_presets(presets):
-    PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PRESETS_FILE.write_text(json.dumps(presets, indent=2), encoding="utf-8")
-
-def snapshot_as_preset(name, icon, desc):
+def snapshot_preset(name, icon, desc):
     """Capture current full state as a new preset."""
-    cowork_state = get_cowork_state()
-    skills       = {s["id"]: s["enabled"] for s in get_skills()}
-    mcps         = {m["key"]: m["enabled"] for m in get_mcp_permissions()}
-    preset = {"id": str(uuid.uuid4())[:8], "name": name, "icon": icon,
-              "desc": desc, "cowork": cowork_state, "mcps": mcps, "skills": skills}
     presets = get_presets()
-    presets.append(preset)
-    save_presets(presets)
-    return preset
+    cowork = get_cowork_state()
+
+    new_preset = {
+        "id": str(uuid.uuid4())[:8],
+        "name": name,
+        "icon": icon or "\u2b50",
+        "desc": desc or "",
+        "builtin": False,
+        "cowork": cowork,
+        "mcps": {},
+        "skills_global": {s["id"]: s["enabled"] for s in get_global_skills()},
+        "skills_project": {s["id"]: s["enabled"] for s in get_project_skills()},
+        "plugins": {},
+    }
+
+    # Capture plugin states
+    gs = get_global_settings()
+    new_preset["plugins"] = gs.get("enabledPlugins", {}).copy()
+
+    presets.append(new_preset)
+    _write_json(_presets_file(), presets)
+    return new_preset
 
 def load_preset(preset_id):
-    """Apply a preset — updates Cowork state, skills, and MCP permissions."""
+    """Apply a preset across all config domains."""
     presets = get_presets()
-    preset  = next((p for p in presets if p["id"] == preset_id), None)
+    preset = next((p for p in presets if p["id"] == preset_id), None)
     if not preset:
-        return False, "Preset not found"
+        return {"ok": False, "error": "Preset not found"}
 
-    # Apply Cowork state
-    state = get_cowork_state()
-    for k, v in preset.get("cowork", {}).items():
-        state[k] = v
-    COWORK_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    # Apply cowork state
+    if preset.get("cowork") and PROJECT_DIR:
+        _write_json(PROJECT_DIR / "cowork-state.json", preset["cowork"])
 
-    # Apply MCP permissions
-    settings = read_settings()
-    allow    = settings.setdefault("permissions", {}).setdefault("allow", [])
-    # Remove all existing mcp__ entries, then re-add enabled ones
-    allow[:] = [e for e in allow if not e.startswith("mcp__")]
-    for key, enabled in preset.get("mcps", {}).items():
-        if enabled:
-            allow.append(key + "__*")
-    write_settings(settings)
+    # Apply global skills
+    if preset.get("skills_global"):
+        for skill_id, should_enable in preset["skills_global"].items():
+            current = next((s for s in get_global_skills() if s["id"] == skill_id), None)
+            if current and current["enabled"] != should_enable:
+                toggle_global_skill(skill_id, should_enable)
 
-    # Apply skills
-    for skill_id, enable in preset.get("skills", {}).items():
-        toggle_skill(skill_id, enable)
+    # Apply project skills
+    if preset.get("skills_project"):
+        for skill_id, should_enable in preset["skills_project"].items():
+            current = next((s for s in get_project_skills() if s["id"] == skill_id), None)
+            if current and current["enabled"] != should_enable:
+                toggle_project_skill(skill_id, should_enable)
 
-    return True, f"Preset '{preset['name']}' loaded"
+    # Apply plugin states
+    if preset.get("plugins"):
+        gs = get_global_settings()
+        gs["enabledPlugins"] = preset["plugins"]
+        save_global_settings(gs)
+
+    return {"ok": True}
 
 def delete_preset(preset_id):
     presets = get_presets()
     presets = [p for p in presets if p["id"] != preset_id]
-    save_presets(presets)
-    return True, "Preset deleted"
+    _write_json(_presets_file(), presets)
+    return {"ok": True}
 
-# ── Session manager ───────────────────────────────────────────────────────────
-
-def _parse_ts(val):
-    """Normalise a timestamp value to millisecond epoch int."""
-    if isinstance(val, (int, float)):
-        return int(val)
-    if isinstance(val, str):
-        try:
-            return int(datetime.fromisoformat(val.replace("Z", "+00:00")).timestamp() * 1000)
-        except Exception:
-            pass
-    return 0
-
-def discover_sessions():
-    """Walk SESSIONS_ROOT two levels deep and collect all local_*.json session files."""
-    sessions = []
-    if not SESSIONS_ROOT.exists():
-        return sessions
-    try:
-        for outer in SESSIONS_ROOT.iterdir():
-            if not outer.is_dir():
-                continue
-            for inner in outer.iterdir():
-                if not inner.is_dir():
-                    continue
-                for jf in inner.glob("local_*.json"):
-                    try:
-                        data = json.loads(jf.read_text(encoding="utf-8"))
-                        created  = _parse_ts(data.get("createdAt", 0))
-                        activity = _parse_ts(data.get("lastActivityAt", created))
-                        title = data.get("title") or data.get("initialMessage") or "Untitled"
-                        sessions.append({
-                            "id":             jf.stem,
-                            "title":          title[:120],
-                            "createdAt":      created,
-                            "lastActivityAt": activity,
-                            "isArchived":     bool(data.get("isArchived", False)),
-                            "_json_path":     str(jf),
-                            "_folder_path":   str(inner / jf.stem),
-                        })
-                    except Exception:
-                        continue
-    except Exception:
-        pass
-    sessions.sort(key=lambda s: s["lastActivityAt"], reverse=True)
-    return sessions
-
-def delete_sessions(ids):
-    """Delete a list of session IDs (json file + folder). Returns count deleted."""
-    all_sessions = discover_sessions()
-    lookup = {s["id"]: s for s in all_sessions}
-    deleted = 0
-    for sid in ids:
-        s = lookup.get(sid)
-        if not s:
-            continue
-        try:
-            jp = Path(s["_json_path"])
-            fp = Path(s["_folder_path"])
-            if jp.exists():
-                jp.unlink()
-            if fp.exists():
-                shutil.rmtree(fp, ignore_errors=True)
-            deleted += 1
-        except Exception:
-            pass
-    return deleted
-
-# ── HTML ──────────────────────────────────────────────────────────────────────
-
-HTML = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Claude Tool Manager</title>
-<style>
-  :root {
-    --bg:#0f1117; --surface:#1a1d27; --surface2:#21253a; --border:#2a2d3e;
-    --accent:#7c6af7; --accent2:#5b9cf6; --green:#4ade80; --red:#f87171;
-    --text:#e2e8f0; --muted:#64748b; --warn:#fbbf24; --gold:#f59e0b;
-  }
-  *{box-sizing:border-box;margin:0;padding:0;}
-  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:16px;min-height:100vh;}
-
-  header{background:var(--surface);border-bottom:1px solid var(--border);padding:18px 28px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:100;}
-  .logo{font-size:22px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
-  .subtitle{color:var(--muted);font-size:14px;}
-  .status-dot{width:9px;height:9px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-
-  .tabs{display:flex;border-bottom:1px solid var(--border);background:var(--surface);padding:0 28px;}
-  .tab{padding:14px 22px;cursor:pointer;color:var(--muted);font-weight:500;font-size:15px;border-bottom:2px solid transparent;transition:all .2s;user-select:none;}
-  .tab:hover{color:var(--text);}
-  .tab.active{color:var(--accent);border-bottom-color:var(--accent);}
-
-  .content{max-width:1000px;margin:0 auto;padding:28px;}
-  .panel{display:none;}
-  .panel.active{display:block;}
-
-  .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
-  .section-title{font-size:18px;font-weight:600;}
-  .section-sub{color:var(--muted);font-size:14px;margin-top:3px;}
-  .badge{font-size:13px;padding:3px 10px;border-radius:999px;font-weight:600;}
-  .badge-green{background:rgba(74,222,128,.15);color:var(--green);}
-  .badge-muted{background:rgba(100,116,139,.15);color:var(--muted);}
-
-  .card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;margin-bottom:36px;}
-  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;display:flex;align-items:flex-start;gap:14px;transition:border-color .2s;}
-  .card:hover{border-color:var(--accent);}
-  .card.enabled {border-left:3px solid var(--green);}
-  .card.disabled{border-left:3px solid var(--border);opacity:.75;}
-  .card.active-connector{border-left:3px solid var(--green);}
-  .card:not(.active-connector):not(.codetab){border-left:3px solid var(--border);opacity:.8;}
-  .card-icon{font-size:24px;line-height:1;margin-top:2px;flex-shrink:0;}
-  .card-body{flex:1;min-width:0;}
-  .card-name{font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .card-desc{color:var(--muted);font-size:13px;margin-top:4px;line-height:1.45;}
-  .card-toggle{flex-shrink:0;margin-top:3px;}
-
-  .switch{position:relative;display:inline-block;width:44px;height:24px;}
-  .switch input{opacity:0;width:0;height:0;}
-  .slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--border);border-radius:24px;transition:.2s;}
-  .slider:before{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s;}
-  input:checked+.slider{background:var(--accent);}
-  input:checked+.slider:before{transform:translateX(20px);}
-
-  /* ── Preset cards ── */
-  .preset-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-bottom:36px;align-items:stretch;}
-  .preset-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:12px;transition:border-color .2s;}
-  .preset-card:hover{border-color:var(--accent);}
-  .preset-card.builtin{border-top:3px solid var(--accent);}
-  .preset-card.custom{border-top:3px solid var(--gold);}
-  .preset-header{display:flex;align-items:center;gap:12px;}
-  .preset-icon{font-size:28px;line-height:1;width:36px;text-align:center;flex-shrink:0;}
-  .preset-name{font-size:17px;font-weight:700;}
-  .preset-type{font-size:11px;padding:2px 7px;border-radius:999px;font-weight:600;margin-left:6px;vertical-align:middle;}
-  .preset-type.builtin{background:rgba(124,106,247,.15);color:var(--accent);}
-  .preset-type.custom{background:rgba(245,158,11,.15);color:var(--gold);}
-  .preset-desc{color:var(--muted);font-size:14px;line-height:1.5;flex:1;}
-  .preset-chips{display:flex;flex-wrap:wrap;gap:6px;}
-  .chip{font-size:12px;padding:3px 9px;border-radius:999px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);}
-  .chip.on{background:rgba(74,222,128,.12);color:var(--green);border-color:rgba(74,222,128,.25);}
-  .preset-actions{display:flex;gap:8px;margin-top:auto;padding-top:4px;}
-  .btn{padding:9px 22px;border-radius:8px;border:none;cursor:pointer;font-weight:600;font-size:15px;transition:all .2s;}
-  .btn-primary{background:var(--accent);color:white;}
-  .btn-primary:hover{background:#6d5ce6;}
-  .btn-secondary{background:var(--border);color:var(--text);}
-  .btn-secondary:hover{background:#3a3d4e;}
-  .btn-sm{padding:6px 14px;font-size:13px;}
-  .btn-load{background:var(--accent);color:white;flex:1;}
-  .btn-load:hover{background:#6d5ce6;}
-  .btn-delete{background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.25);}
-  .btn-delete:hover{background:rgba(248,113,113,.2);}
-
-  /* Snapshot modal */
-  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:.2s;}
-  .modal-overlay.show{opacity:1;pointer-events:all;}
-  .modal{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px;width:440px;max-width:90vw;display:flex;flex-direction:column;gap:18px;}
-  .modal h2{font-size:18px;font-weight:700;}
-  .modal label{font-size:14px;color:var(--muted);display:block;margin-bottom:6px;}
-  .modal input,.modal textarea{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-size:15px;outline:none;}
-  .modal input:focus,.modal textarea:focus{border-color:var(--accent);}
-  .modal textarea{resize:vertical;min-height:70px;font-family:inherit;}
-  .icon-row{display:flex;gap:8px;flex-wrap:wrap;}
-  .icon-btn{font-size:22px;padding:6px 10px;border-radius:8px;border:2px solid transparent;cursor:pointer;background:var(--surface2);transition:.15s;}
-  .icon-btn.selected{border-color:var(--accent);}
-  .modal-actions{display:flex;gap:10px;justify-content:flex-end;}
-
-  .save-bar{position:sticky;bottom:0;background:var(--surface);border-top:1px solid var(--border);padding:14px 28px;display:flex;align-items:center;gap:14px;}
-  .save-bar.hidden{display:none;}
-  .restart-notice{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:10px 16px;color:var(--warn);font-size:14px;}
-
-  .info-box{background:rgba(124,106,247,.08);border:1px solid rgba(124,106,247,.25);border-radius:8px;padding:14px 18px;margin-bottom:22px;font-size:14px;color:var(--muted);line-height:1.65;}
-  .info-box strong{color:var(--text);}
-
-  .guide-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;display:flex;align-items:flex-start;gap:14px;margin-bottom:12px;}
-  .guide-card .how{font-size:13px;color:var(--accent2);margin-top:6px;font-family:'Courier New',monospace;background:rgba(91,156,246,.1);padding:4px 10px;border-radius:4px;display:inline-block;}
-  .guide-card.codetab{opacity:.85;}
-  .codetab-tag{font-size:12px;color:var(--accent);background:rgba(124,106,247,.15);padding:2px 8px;border-radius:4px;margin-left:8px;}
-  .active-tag{font-size:12px;color:var(--green);background:rgba(74,222,128,.12);padding:2px 8px;border-radius:4px;margin-left:8px;}
-
-  .toast{position:fixed;bottom:84px;right:28px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 20px;font-size:15px;font-weight:500;box-shadow:0 8px 32px rgba(0,0,0,.4);z-index:999;transform:translateY(20px);opacity:0;transition:all .3s;pointer-events:none;}
-  .toast.show{transform:translateY(0);opacity:1;}
-  .toast.success{border-color:var(--green);color:var(--green);}
-  .toast.error{border-color:var(--red);color:var(--red);}
-
-  .empty{color:var(--muted);text-align:center;padding:48px;font-size:15px;}
-  hr{border:none;border-top:1px solid var(--border);margin:28px 0;}
-
-  /* ── Sessions tab ── */
-  .sessions-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:18px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;}
-  .sessions-toolbar .spacer{flex:1;}
-  .sessions-table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border);}
-  table.sessions-tbl{width:100%;border-collapse:collapse;background:var(--surface);}
-  table.sessions-tbl th{padding:12px 14px;text-align:left;font-size:13px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap;}
-  table.sessions-tbl td{padding:11px 14px;font-size:14px;border-bottom:1px solid var(--border);vertical-align:middle;}
-  table.sessions-tbl tr:last-child td{border-bottom:none;}
-  table.sessions-tbl tbody tr:hover{background:rgba(124,106,247,.06);}
-  table.sessions-tbl tbody tr.archived{opacity:.6;}
-  .session-title{font-weight:500;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .session-id-cell{font-family:'Courier New',monospace;font-size:12px;color:var(--muted);}
-  .badge-active{background:rgba(74,222,128,.15);color:var(--green);padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;}
-  .badge-archived{background:rgba(100,116,139,.15);color:var(--muted);padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;}
-  .btn-danger{background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.25);padding:7px 16px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s;}
-  .btn-danger:hover:not(:disabled){background:rgba(248,113,113,.22);}
-  .btn-danger:disabled{opacity:.4;cursor:not-allowed;}
-  .del-modal-list{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 16px;max-height:180px;overflow-y:auto;margin:10px 0;font-size:14px;color:var(--muted);line-height:1.8;}
-</style>
-</head>
-<body>
-
-<header>
-  <span style="font-size:28px">🛠️</span>
-  <div>
-    <div class="logo">Claude Tool Manager</div>
-    <div class="subtitle">Skills · MCP permissions · Cowork connectors · Session presets</div>
-  </div>
-  <div style="flex:1"></div>
-  <div class="status-dot"></div>
-  <span style="color:var(--muted);font-size:14px;margin-left:6px">Live</span>
-</header>
-
-<div class="tabs">
-  <div class="tab active"  onclick="switchTab('presets')">⚡ Presets</div>
-  <div class="tab"         onclick="switchTab('claude-code')">💻 Claude Code</div>
-  <div class="tab"         onclick="switchTab('cowork')">🤝 Cowork</div>
-  <div class="tab"         onclick="switchTab('sessions')">💬 Sessions</div>
-</div>
-
-<div class="content">
-
-  <!-- ── Presets Panel ── -->
-  <div class="panel active" id="panel-presets">
-
-    <div class="info-box">
-      <strong>Session presets</strong> let you switch your full tool configuration in one click.
-      Each preset sets your <strong>Cowork connector checklist</strong>, <strong>Claude Code skills</strong>, and <strong>MCP permissions</strong> all at once.
-      Use <strong>Snapshot current state</strong> to save what you have active right now as a new preset.
-    </div>
-
-    <div class="section-header">
-      <div>
-        <div class="section-title">Your Presets</div>
-        <div class="section-sub">Click Load to apply a preset — Claude Code restart required for Code changes</div>
-      </div>
-      <button class="btn btn-primary btn-sm" onclick="showSnapshotModal()">📸 Snapshot current state</button>
-    </div>
-
-    <div class="preset-grid" id="preset-grid">
-      <div class="empty">Loading presets…</div>
-    </div>
-
-  </div>
-
-  <!-- ── Claude Code Panel ── -->
-  <div class="panel" id="panel-claude-code">
-    <div class="info-box">
-      <strong>How this works:</strong> Changes update <code>C:\Software\.claude\</code> directly.
-      Skills are toggled by renaming <code>SKILL.md</code>. MCPs update <code>settings.local.json</code>.
-      <strong>A Claude Code restart is required</strong> after saving.
-    </div>
-    <div class="section-header">
-      <div><div class="section-title">Skills</div><div class="section-sub">C:\Software\.claude\skills\</div></div>
-      <div id="skills-count" class="badge badge-green">–</div>
-    </div>
-    <div class="card-grid" id="skills-grid"><div class="empty">Loading…</div></div>
-    <hr>
-    <div class="section-header">
-      <div><div class="section-title">MCP Permissions</div><div class="section-sub">Pre-approved tools in settings.local.json</div></div>
-      <div id="mcps-count" class="badge badge-green">–</div>
-    </div>
-    <div class="card-grid" id="mcps-grid"><div class="empty">Loading…</div></div>
-  </div>
-
-  <!-- ── Cowork Panel ── -->
-  <div class="panel" id="panel-cowork">
-    <div class="info-box">
-      <strong>Cowork connectors</strong> are managed through the Cowork app UI.
-      Toggle the switches below as a <strong>personal checklist</strong> of what's active in your current session.
-      Items marked <span style="color:var(--accent);font-weight:600">Code tab</span> are available via the Code tab in this same app.
-    </div>
-    <div class="section-header">
-      <div><div class="section-title">Connectors</div><div class="section-sub">Track which connectors are active in your current Cowork session</div></div>
-      <div id="cowork-count" class="badge badge-green">–</div>
-    </div>
-    <div id="cowork-list">Loading…</div>
-    <hr>
-    <div class="section-header">
-      <div><div class="section-title">Skills in Cowork</div><div class="section-sub">Bundled skills — load automatically</div></div>
-    </div>
-    <div class="card-grid" id="cowork-skills-grid"><div class="empty">Loading…</div></div>
-  </div>
-
-</div>
-
-<!-- Save bar -->
-<div class="save-bar hidden" id="save-bar">
-  <div class="restart-notice">⚠️ Unsaved changes — Claude Code must be restarted after saving.</div>
-  <div style="flex:1"></div>
-  <button class="btn btn-secondary" onclick="discardChanges()">Discard</button>
-  <button class="btn btn-primary"   onclick="saveAll()">💾 Save Changes</button>
-</div>
-
-<!-- Snapshot modal -->
-<div class="modal-overlay" id="modal-overlay" onclick="hideModal(event)">
-  <div class="modal" onclick="event.stopPropagation()">
-    <h2>📸 Save current state as preset</h2>
-    <div>
-      <label>Preset name</label>
-      <input id="preset-name" type="text" placeholder="e.g. Morning Routine, NetScaler Debug…" maxlength="40">
-    </div>
-    <div>
-      <label>Icon</label>
-      <div class="icon-row" id="icon-row">
-        <!-- populated by JS -->
-      </div>
-    </div>
-    <div>
-      <label>Description (optional)</label>
-      <textarea id="preset-desc" placeholder="What is this preset for?"></textarea>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="hideModal()">Cancel</button>
-      <button class="btn btn-primary"   onclick="doSnapshot()">Save Preset</button>
-    </div>
-  </div>
-</div>
-
-  <!-- ── Sessions Panel ── -->
-  <div class="panel" id="panel-sessions">
-    <div class="info-box">
-      <strong>Cowork session history</strong> — browse, filter, and permanently delete past sessions stored on your computer.
-      Sessions are stored in <strong>%APPDATA%\Claude\local-agent-mode-sessions</strong>.
-      Deletion is <strong>permanent</strong> and cannot be undone.
-    </div>
-
-    <div class="sessions-toolbar">
-      <button class="btn btn-secondary btn-sm" onclick="selectAllSessions()">Select All</button>
-      <button class="btn btn-secondary btn-sm" onclick="deselectAllSessions()">Deselect All</button>
-      <label style="display:flex;align-items:center;gap:7px;font-size:14px;color:var(--muted);cursor:pointer;">
-        <input type="checkbox" id="show-archived" onchange="renderSessions()" style="width:15px;height:15px;cursor:pointer;">
-        Show archived
-      </label>
-      <div class="spacer"></div>
-      <span id="selected-label" style="font-size:14px;color:var(--muted);">0 selected</span>
-      <button class="btn-danger" id="delete-sessions-btn" disabled onclick="confirmDeleteSessions()">🗑 Delete Selected</button>
-      <button class="btn btn-secondary btn-sm" onclick="loadSessions()">↺ Refresh</button>
-    </div>
-
-    <div class="sessions-table-wrap">
-      <table class="sessions-tbl">
-        <thead>
-          <tr>
-            <th style="width:36px"><input type="checkbox" id="header-checkbox" onchange="toggleAllSessions(this)" style="width:15px;height:15px;cursor:pointer;"></th>
-            <th>Title</th>
-            <th>Session ID</th>
-            <th>Created</th>
-            <th>Last Active</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody id="sessions-tbody"><tr><td colspan="6" class="empty">Loading sessions…</td></tr></tbody>
-      </table>
-    </div>
-
-    <!-- Delete confirm modal -->
-    <div class="modal-overlay" id="del-sessions-modal" onclick="if(event.target===this)cancelDeleteSessions()">
-      <div class="modal">
-        <h2>⚠️ Delete Sessions?</h2>
-        <p style="color:var(--muted);font-size:14px;">This will permanently delete the selected sessions. This cannot be undone.</p>
-        <div class="del-modal-list" id="del-modal-list"></div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" onclick="cancelDeleteSessions()">Cancel</button>
-          <button class="btn" style="background:var(--red);color:white;" onclick="executeDeleteSessions()">Delete</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-</div><!-- /content -->
-
-<div class="toast" id="toast"></div>
-
-<script>
-const ICONS = ['⚡','🔧','🎨','🌐','📊','🖥️','🔍','📝','🚀','💼','🧪','📱','🔒','🗂️','⚙️','🏗️'];
-let selectedIcon = '⚡';
-let skillsData = [], mcpsData = [];
-let pendingSkills = {}, pendingMcps = {};
-let dirty = false;
-
-async function api(path, body) {
-  const opts = body ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)} : {};
-  return (await fetch(path, opts)).json();
-}
-
-function showToast(msg, type='success') {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.className = 'toast show ' + type;
-  setTimeout(() => t.className='toast', 3200);
-}
-
-function markDirty() {
-  dirty = true;
-  document.getElementById('save-bar').classList.remove('hidden');
-}
-
-function switchTab(tab) {
-  const tabs = ['presets','claude-code','cowork','sessions'];
-  document.querySelectorAll('.tab').forEach((el,i) => el.classList.toggle('active', tabs[i]===tab));
-  document.querySelectorAll('.panel').forEach(el => el.classList.remove('active'));
-  document.getElementById('panel-'+tab).classList.add('active');
-  if (tab !== 'claude-code') document.getElementById('save-bar').classList.add('hidden');
-  if (tab === 'claude-code' && dirty) document.getElementById('save-bar').classList.remove('hidden');
-  if (tab === 'sessions') loadSessions();
-}
-
-/* ── Presets ── */
-async function loadPresets() {
-  const data = await api('/api/presets');
-  const grid = document.getElementById('preset-grid');
-  if (!data.length) { grid.innerHTML='<div class="empty">No presets yet — snapshot your current state to create one.</div>'; return; }
-  grid.innerHTML = data.map(p => {
-    const isBuiltin = ['netscaler-citrix','website-design','general'].includes(p.id);
-    const activeCowork  = Object.values(p.cowork||{}).filter(Boolean).length;
-    const activeMcps    = Object.values(p.mcps||{}).filter(Boolean).length;
-    const activeSkills  = Object.values(p.skills||{}).filter(Boolean).length;
-    return `<div class="preset-card ${isBuiltin?'builtin':'custom'}">
-      <div class="preset-header">
-        <div class="preset-icon">${p.icon}</div>
-        <div>
-          <div class="preset-name">${p.name}<span class="preset-type ${isBuiltin?'builtin':'custom'}">${isBuiltin?'Built-in':'Custom'}</span></div>
-        </div>
-      </div>
-      <div class="preset-desc">${p.desc||''}</div>
-      <div class="preset-chips">
-        <span class="chip on">🤝 ${activeCowork} connectors</span>
-        <span class="chip on">🔌 ${activeMcps} MCPs</span>
-        ${activeSkills>0?`<span class="chip on">⚙️ ${activeSkills} skill${activeSkills>1?'s':''}</span>`:''}
-      </div>
-      <div class="preset-actions">
-        <button class="btn btn-load btn-sm" onclick="applyPreset('${p.id}','${p.name.replace(/'/g,"\\'")}')">⚡ Load</button>
-        ${!isBuiltin?`<button class="btn btn-delete btn-sm" onclick="removePreset('${p.id}')">🗑 Delete</button>`:''}
-      </div>
-    </div>`;
-  }).join('');
-}
-
-async function applyPreset(id, name) {
-  const r = await api('/api/presets/load', {id});
-  if (r.ok) {
-    showToast(`✅ "${name}" loaded — restart Claude Code to apply Code changes`);
-    loadPresets(); loadCowork(); loadData();
-  } else showToast(r.msg, 'error');
-}
-
-async function removePreset(id) {
-  if (!confirm('Delete this preset?')) return;
-  await api('/api/presets/delete', {id});
-  showToast('Preset deleted'); loadPresets();
-}
-
-function showSnapshotModal() {
-  document.getElementById('preset-name').value = '';
-  document.getElementById('preset-desc').value = '';
-  selectedIcon = '⚡';
-  document.getElementById('icon-row').innerHTML = ICONS.map(ic =>
-    `<button class="icon-btn ${ic===selectedIcon?'selected':''}" onclick="selectIcon('${ic}')">${ic}</button>`
-  ).join('');
-  document.getElementById('modal-overlay').classList.add('show');
-  setTimeout(() => document.getElementById('preset-name').focus(), 100);
-}
-
-function selectIcon(ic) {
-  selectedIcon = ic;
-  document.querySelectorAll('.icon-btn').forEach(b => b.classList.toggle('selected', b.textContent===ic));
-}
-
-function hideModal(e) {
-  if (!e || e.target===document.getElementById('modal-overlay'))
-    document.getElementById('modal-overlay').classList.remove('show');
-}
-
-async function doSnapshot() {
-  const name = document.getElementById('preset-name').value.trim();
-  if (!name) { document.getElementById('preset-name').focus(); return; }
-  const desc = document.getElementById('preset-desc').value.trim();
-  const r = await api('/api/presets/snapshot', {name, icon: selectedIcon, desc});
-  if (r.ok) {
-    hideModal(); showToast(`✅ Preset "${name}" saved!`); loadPresets();
-  } else showToast(r.msg, 'error');
-}
-
-/* ── Claude Code tab ── */
-function renderSkills() {
-  const grid = document.getElementById('skills-grid');
-  const en = skillsData.filter(s => (s.id in pendingSkills ? pendingSkills[s.id] : s.enabled));
-  document.getElementById('skills-count').textContent = en.length+'/'+skillsData.length+' enabled';
-  if (!skillsData.length) { grid.innerHTML='<div class="empty">No skills found</div>'; return; }
-  grid.innerHTML = skillsData.map(s => {
-    const on = s.id in pendingSkills ? pendingSkills[s.id] : s.enabled;
-    return `<div class="card ${on?'enabled':'disabled'}">
-      <div class="card-icon">⚙️</div>
-      <div class="card-body"><div class="card-name">${s.name}</div><div class="card-desc">${s.desc||'No description'}</div></div>
-      <div class="card-toggle"><label class="switch"><input type="checkbox" ${on?'checked':''} onchange="toggleSkill('${s.id}',this.checked)"><span class="slider"></span></label></div>
-    </div>`;
-  }).join('');
-}
-
-function renderMcps() {
-  const grid = document.getElementById('mcps-grid');
-  const en = mcpsData.filter(m => (m.key in pendingMcps ? pendingMcps[m.key] : m.enabled));
-  document.getElementById('mcps-count').textContent = en.length+'/'+mcpsData.length+' enabled';
-  if (!mcpsData.length) { grid.innerHTML='<div class="empty">No MCPs configured</div>'; return; }
-  grid.innerHTML = mcpsData.map(m => {
-    const on = m.key in pendingMcps ? pendingMcps[m.key] : m.enabled;
-    return `<div class="card ${on?'enabled':'disabled'}">
-      <div class="card-icon">${m.icon}</div>
-      <div class="card-body"><div class="card-name">${m.name}</div><div class="card-desc">${m.desc}</div></div>
-      <div class="card-toggle"><label class="switch"><input type="checkbox" ${on?'checked':''} onchange="toggleMcp('${m.key}',this.checked)"><span class="slider"></span></label></div>
-    </div>`;
-  }).join('');
-}
-
-function toggleSkill(id,val){ pendingSkills[id]=val; markDirty(); renderSkills(); }
-function toggleMcp(key,val) { pendingMcps[key]=val;  markDirty(); renderMcps();  }
-
-async function saveAll() {
-  let ok=0,fail=0;
-  for (const [id,enable] of Object.entries(pendingSkills)) {
-    const r = await api('/api/skills/toggle',{id,enable}); r.ok?ok++:fail++;
-  }
-  for (const [key,enable] of Object.entries(pendingMcps)) {
-    const r = await api('/api/mcps/toggle',{key,enable}); r.ok?ok++:fail++;
-  }
-  pendingSkills={}; pendingMcps={}; dirty=false;
-  document.getElementById('save-bar').classList.add('hidden');
-  await loadData();
-  if (fail) showToast(`Saved ${ok}, ${fail} failed`,'error');
-  else showToast('✅ Saved! Restart Claude Code to apply changes.');
-}
-
-function discardChanges() {
-  pendingSkills={}; pendingMcps={}; dirty=false;
-  document.getElementById('save-bar').classList.add('hidden');
-  renderSkills(); renderMcps(); showToast('Changes discarded');
-}
-
-async function loadData() {
-  const [skills,mcps] = await Promise.all([api('/api/skills'),api('/api/mcps')]);
-  skillsData=skills; mcpsData=mcps; renderSkills(); renderMcps();
-}
-
-/* ── Cowork tab ── */
-async function toggleCowork(id,active) {
-  await api('/api/cowork/toggle',{id,active}); loadCowork();
-}
-
-async function loadCowork() {
-  const data = await api('/api/cowork');
-  const active = data.connectors.filter(c=>c.active&&c.cowork).length;
-  const total  = data.connectors.filter(c=>c.cowork).length;
-  document.getElementById('cowork-count').textContent = active+'/'+total+' active';
-
-  document.getElementById('cowork-list').innerHTML = data.connectors.map(c => {
-    const isCodeTab = !c.cowork;
-    return `<div class="guide-card ${isCodeTab?'codetab':''} ${c.active&&!isCodeTab?'active-connector':''}">
-      <div class="card-icon">${c.icon}</div>
-      <div class="card-body">
-        <div class="card-name">${c.name}
-          ${isCodeTab?'<span class="codetab-tag">Code tab</span>':''}
-          ${c.active&&!isCodeTab?'<span class="active-tag">● Active</span>':''}
-        </div>
-        <div class="card-desc">${c.desc}</div>
-        <div class="how">${c.how}</div>
-      </div>
-      ${!isCodeTab?`<div class="card-toggle" style="margin-top:3px"><label class="switch"><input type="checkbox" ${c.active?'checked':''} onchange="toggleCowork('${c.id}',this.checked)"><span class="slider"></span></label></div>`
-        :'<div style="font-size:13px;color:var(--accent);margin-top:3px;white-space:nowrap">Code tab</div>'}
-    </div>`;
-  }).join('');
-
-  // Live skills — read directly from the skills directory (same data as Claude Code tab)
-  const skillsGrid = document.getElementById('cowork-skills-grid');
-  const liveSkills = await api('/api/skills');
-  if (!liveSkills.length) {
-    skillsGrid.innerHTML = '<div class="empty">No skills found in skills directory</div>';
-  } else {
-    skillsGrid.innerHTML = liveSkills.map(s => {
-      const badge = s.enabled
-        ? `<div style="font-size:13px;color:var(--green);white-space:nowrap">&#9679; Enabled</div>`
-        : `<div style="font-size:13px;color:var(--muted);white-space:nowrap">Disabled</div>`;
-      return `<div class="card ${s.enabled?'enabled':'disabled'}">
-        <div class="card-icon">&#9881;&#65039;</div>
-        <div class="card-body"><div class="card-name">${s.name}</div><div class="card-desc">${s.desc||'No description'}</div></div>
-        ${badge}</div>`;
-    }).join('');
-  }
-}
-
-/* ── Sessions tab ── */
-let sessionsData = [];
-let selectedSessionIds = new Set();
-let sessionsToDelete = [];
-
-async function loadSessions() {
-  document.getElementById('sessions-tbody').innerHTML =
-    '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--muted)">Loading sessions\u2026</td></tr>';
-  sessionsData = await api('/api/sessions');
-  selectedSessionIds.clear();
-  renderSessions();
-  updateSessionDeleteBtn();
-}
-
-function fmtDate(ms) {
-  if (!ms) return '\u2014';
-  const d = new Date(ms);
-  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-}
-
-function renderSessions() {
-  const showArchived = document.getElementById('show-archived').checked;
-  const filtered = showArchived ? sessionsData : sessionsData.filter(s => !s.isArchived);
-  const tbody = document.getElementById('sessions-tbody');
-  if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:48px;color:var(--muted)">' +
-      (sessionsData.length ? 'No active sessions. Enable "Show archived" to see all.' : 'No sessions found.') + '</td></tr>';
-    return;
-  }
-  tbody.innerHTML = filtered.map(s => {
-    const checked = selectedSessionIds.has(s.id) ? 'checked' : '';
-    const arc = s.isArchived ? 'archived' : '';
-    const badge = s.isArchived
-      ? '<span class="badge-archived">Archived</span>'
-      : '<span class="badge-active">Active</span>';
-    const shortId = s.id.replace('local_','').substring(0,12) + '\u2026';
-    return `<tr class="${arc}">
-      <td class="checkbox-cell"><input type="checkbox" data-id="${s.id}" ${checked} onchange="toggleSessionRow(this)" style="width:15px;height:15px;cursor:pointer;"></td>
-      <td><div class="session-title" title="${escSess(s.title)}">${escSess(s.title)}</div></td>
-      <td class="session-id-cell" title="${s.id}">${shortId}</td>
-      <td style="white-space:nowrap;font-size:13px;color:var(--muted)">${fmtDate(s.createdAt)}</td>
-      <td style="white-space:nowrap;font-size:13px;color:var(--muted)">${fmtDate(s.lastActivityAt)}</td>
-      <td>${badge}</td>
-    </tr>`;
-  }).join('');
-  updateHeaderCheckbox();
-}
-
-function escSess(t) {
-  const d = document.createElement('div'); d.textContent = t; return d.innerHTML;
-}
-
-function toggleSessionRow(cb) {
-  if (cb.checked) selectedSessionIds.add(cb.dataset.id);
-  else selectedSessionIds.delete(cb.dataset.id);
-  updateSessionDeleteBtn(); updateHeaderCheckbox();
-}
-
-function toggleAllSessions(cb) {
-  document.querySelectorAll('#sessions-tbody [data-id]').forEach(c => {
-    c.checked = cb.checked;
-    if (cb.checked) selectedSessionIds.add(c.dataset.id);
-    else selectedSessionIds.delete(c.dataset.id);
-  });
-  updateSessionDeleteBtn();
-}
-
-function selectAllSessions() {
-  document.querySelectorAll('#sessions-tbody [data-id]').forEach(c => {
-    c.checked = true; selectedSessionIds.add(c.dataset.id);
-  });
-  updateSessionDeleteBtn(); updateHeaderCheckbox();
-}
-
-function deselectAllSessions() {
-  document.querySelectorAll('#sessions-tbody [data-id]').forEach(c => {
-    c.checked = false; selectedSessionIds.delete(c.dataset.id);
-  });
-  updateSessionDeleteBtn(); updateHeaderCheckbox();
-}
-
-function updateHeaderCheckbox() {
-  const all = document.querySelectorAll('#sessions-tbody [data-id]');
-  const checked = Array.from(all).filter(c => c.checked).length;
-  const hdr = document.getElementById('header-checkbox');
-  if (!hdr) return;
-  hdr.checked = checked > 0 && checked === all.length;
-  hdr.indeterminate = checked > 0 && checked < all.length;
-}
-
-function updateSessionDeleteBtn() {
-  const n = selectedSessionIds.size;
-  document.getElementById('selected-label').textContent = n + ' selected';
-  document.getElementById('delete-sessions-btn').disabled = n === 0;
-}
-
-function confirmDeleteSessions() {
-  if (!selectedSessionIds.size) return;
-  sessionsToDelete = Array.from(selectedSessionIds);
-  const list = document.getElementById('del-modal-list');
-  const shown = sessionsToDelete.slice(0, 8);
-  const rest = sessionsToDelete.length - shown.length;
-  list.innerHTML = shown.map(id => {
-    const s = sessionsData.find(x => x.id === id);
-    return '<div style="padding:2px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-      escSess(s ? s.title : id) + '</div>';
-  }).join('') + (rest > 0 ? `<div style="color:var(--muted);margin-top:4px">\u2026and ${rest} more</div>` : '');
-  document.getElementById('del-sessions-modal').classList.add('show');
-}
-
-function cancelDeleteSessions() {
-  document.getElementById('del-sessions-modal').classList.remove('show');
-}
-
-async function executeDeleteSessions() {
-  const ids = sessionsToDelete;
-  cancelDeleteSessions();
-  const r = await api('/api/sessions/delete', {ids});
-  showToast(r.ok ? `\u2705 Deleted ${r.deleted} session${r.deleted!==1?'s':''}` : 'Delete failed', r.ok?'success':'error');
-  loadSessions();
-}
-
-// Init
-loadPresets(); loadData(); loadCowork();
-</script>
-</body>
-</html>
-"""
-
-# ── HTTP Handler ──────────────────────────────────────────────────────────────
+# ── HTTP Server ───────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args): pass
 
-    def send_json(self, data, code=200):
+    def log_message(self, format, *args):
+        pass  # Silence default logging
+
+    def _send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", len(body))
-        self.end_headers(); self.wfile.write(body)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
 
-    def send_html(self, html):
-        body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", len(body))
-        self.end_headers(); self.wfile.write(body)
+    def _send_file(self, filepath):
+        try:
+            resolved = filepath.resolve()
+            static_resolved = STATIC_DIR.resolve()
+            if not str(resolved).startswith(str(static_resolved)):
+                self.send_error(403, "Forbidden")
+                return
+            if not resolved.is_file():
+                self.send_error(404, "Not Found")
+                return
+            content = resolved.read_bytes()
+            mime = MIME_TYPES.get(resolved.suffix.lower(), "application/octet-stream")
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", len(content))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(content)
+        except OSError:
+            self.send_error(500, "Internal Server Error")
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
     def do_GET(self):
         path = urlparse(self.path).path
-        if path in ("/", "/index.html"):
-            self.send_html(HTML)
-        elif path == "/api/skills":
-            self.send_json(get_skills())
-        elif path == "/api/mcps":
-            self.send_json(get_mcp_permissions())
-        elif path == "/api/cowork":
-            state = get_cowork_state()
-            connectors = [{**c, "active": state.get(c["id"], COWORK_STATE_DEFAULTS.get(c["id"], False))}
-                          for c in COWORK_CONNECTORS]
-            # Auto-surface any extra connectors saved in cowork-state.json but not in the hardcoded list
-            known_ids = {c["id"] for c in COWORK_CONNECTORS}
-            for cid, active in state.items():
-                if cid not in known_ids:
-                    display = cid.replace("-", " ").replace("_", " ").title()
-                    connectors.append({"id": cid, "name": display, "icon": "🔌",
-                                       "desc": "Connector (auto-discovered from saved state)",
-                                       "how": "Settings -> Connectors in the Cowork app",
-                                       "cowork": True, "active": active})
-            self.send_json({"connectors": connectors})
-        elif path == "/api/presets":
-            self.send_json(get_presets())
-        elif path == "/api/sessions":
-            sessions = discover_sessions()
-            public = [{"id": s["id"], "title": s["title"], "createdAt": s["createdAt"],
-                       "lastActivityAt": s["lastActivityAt"], "isArchived": s["isArchived"]}
-                      for s in sessions]
-            self.send_json(public)
+
+        # Redirect root to index
+        if path == "/" or path == "":
+            self.send_response(302)
+            self.send_header("Location", "/static/index.html")
+            self.end_headers()
+            return
+
+        # Static files
+        if path.startswith("/static/"):
+            rel = path[len("/static/"):]
+            self._send_file(STATIC_DIR / rel)
+            return
+
+        # API routes
+        routes = {
+            "/api/config/paths": lambda: {
+                "global": str(GLOBAL_DIR),
+                "project": str(PROJECT_DIR) if PROJECT_DIR else None,
+                "sessions": str(SESSIONS_ROOT),
+            },
+            "/api/projects": get_projects,
+            "/api/dashboard/stats": get_dashboard_stats,
+            "/api/dashboard/rate-limits": get_rate_limits,
+            "/api/settings/global": get_global_settings,
+            "/api/settings/project": get_project_settings,
+            "/api/settings/mcp-servers": get_mcp_servers,
+            "/api/skills/global": get_global_skills,
+            "/api/skills/project": get_project_skills,
+            "/api/plugins": get_plugins,
+            "/api/connectors": get_connectors,
+            "/api/sessions": get_sessions,
+            "/api/presets": get_presets,
+        }
+
+        handler = routes.get(path)
+        if handler:
+            try:
+                self._send_json(handler())
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
         else:
-            self.send_response(404); self.end_headers()
+            self.send_error(404, "Not Found")
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body   = json.loads(self.rfile.read(length)) if length else {}
-        path   = urlparse(self.path).path
+        path = urlparse(self.path).path
+        body = self._read_body()
 
-        if   path == "/api/skills/toggle":
-            ok, msg = toggle_skill(body.get("id",""), body.get("enable", True))
-            self.send_json({"ok": ok, "msg": msg})
-        elif path == "/api/mcps/toggle":
-            ok, msg = toggle_mcp(body.get("key",""), body.get("enable", True))
-            self.send_json({"ok": ok, "msg": msg})
-        elif path == "/api/cowork/toggle":
-            ok, msg = set_cowork_active(body.get("id",""), body.get("active", True))
-            self.send_json({"ok": ok, "msg": msg})
-        elif path == "/api/presets/snapshot":
-            p = snapshot_as_preset(body.get("name","Untitled"), body.get("icon","⚡"), body.get("desc",""))
-            self.send_json({"ok": True, "preset": p})
-        elif path == "/api/presets/load":
-            ok, msg = load_preset(body.get("id",""))
-            self.send_json({"ok": ok, "msg": msg})
-        elif path == "/api/presets/delete":
-            ok, msg = delete_preset(body.get("id",""))
-            self.send_json({"ok": ok, "msg": msg})
-        elif path == "/api/sessions/delete":
-            ids = body.get("ids", [])
-            count = delete_sessions(ids)
-            self.send_json({"ok": True, "deleted": count})
-        else:
-            self.send_response(404); self.end_headers()
+        try:
+            if path == "/api/config/project":
+                global PROJECT_DIR
+                pid = body.get("project", "")
+                candidate = GLOBAL_DIR / "projects" / pid
+                if candidate.is_dir():
+                    real_path = _decode_project_dir_name(pid)
+                    PROJECT_DIR = Path(real_path) / ".claude"
+                    self._send_json({"ok": True, "project": str(PROJECT_DIR)})
+                else:
+                    self._send_json({"ok": False, "error": "Project not found"}, 404)
+
+            elif path == "/api/settings/global":
+                save_global_settings(body)
+                self._send_json({"ok": True})
+
+            elif path == "/api/settings/project":
+                save_project_settings(body)
+                self._send_json({"ok": True})
+
+            elif path == "/api/settings/permissions/project/toggle":
+                result = toggle_project_permission(body.get("entry", ""), body.get("enable", True))
+                self._send_json(result)
+
+            elif path == "/api/skills/global/toggle":
+                result = toggle_global_skill(body.get("id", ""), body.get("enable", True))
+                self._send_json(result)
+
+            elif path == "/api/skills/project/toggle":
+                result = toggle_project_skill(body.get("id", ""), body.get("enable", True))
+                self._send_json(result)
+
+            elif path == "/api/plugins/toggle":
+                result = toggle_plugin(body.get("id", ""), body.get("enable", True))
+                self._send_json(result)
+
+            elif path == "/api/connectors/cowork/toggle":
+                result = toggle_cowork(body.get("id", ""), body.get("active", True))
+                self._send_json(result)
+
+            elif path == "/api/sessions/delete":
+                result = delete_sessions(body.get("ids", []))
+                self._send_json(result)
+
+            elif path == "/api/presets/snapshot":
+                result = snapshot_preset(body.get("name", ""), body.get("icon", ""), body.get("desc", ""))
+                self._send_json(result)
+
+            elif path == "/api/presets/load":
+                result = load_preset(body.get("id", ""))
+                self._send_json(result)
+
+            elif path == "/api/presets/delete":
+                result = delete_preset(body.get("id", ""))
+                self._send_json(result)
+
+            else:
+                self.send_error(404, "Not Found")
+
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    url = f"http://localhost:{PORT}"
-    print(f"\n  🛠️  Claude Tool Manager")
-    print(f"  ─────────────────────────────────────────")
-    print(f"  Server  : {url}")
-    print(f"  Skills  : {SKILLS_DIR}")
-    print(f"  Settings: {SETTINGS_FILE}")
-    print(f"  Presets : {PRESETS_FILE}")
-    print(f"\n  Opening browser... (Ctrl+C to stop)\n")
+def main():
+    print()
+    print("  Claude Tool Manager v2")
+    print(f"  Global config:  {GLOBAL_DIR}")
+    print(f"  Project config: {PROJECT_DIR or '(none)'}")
+    print(f"  Sessions root:  {SESSIONS_ROOT}")
+    print(f"  Static files:   {STATIC_DIR}")
+    print()
+
     try:
-        webbrowser.open(url)
-        with HTTPServer(("localhost", PORT), Handler) as srv:
-            srv.serve_forever()
-    except KeyboardInterrupt:
-        print("\n  Stopped."); sys.exit(0)
+        server = HTTPServer(("127.0.0.1", PORT), Handler)
     except OSError as e:
-        print(f"\n  ERROR: Could not start on port {PORT}: {e}"); sys.exit(1)
+        print(f"  ERROR: Could not bind port {PORT}: {e}")
+        sys.exit(1)
+
+    url = f"http://localhost:{PORT}"
+    print(f"  Listening on {url}")
+    print("  Press Ctrl+C to stop.")
+    print()
+
+    webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n  Stopped.")
+        server.server_close()
+
+if __name__ == "__main__":
+    main()

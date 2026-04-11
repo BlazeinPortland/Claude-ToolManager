@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Tool Manager</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <h1 class="logo">Claude Tool Manager</h1>
+    </div>
+    <div class="header-right">
+      <select id="project-select" class="project-select" title="Active project"></select>
+      <span id="path-info" class="path-info"></span>
+    </div>
+  </header>
+
+  <!-- Tab bar -->
+  <nav class="tab-bar">
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="skills">Skills</button>
+    <button class="tab" data-tab="plugins">Plugins</button>
+    <button class="tab" data-tab="connectors">Connectors</button>
+    <button class="tab" data-tab="sessions">Sessions</button>
+    <button class="tab" data-tab="presets">Presets</button>
+  </nav>
+
+  <!-- Tab panels -->
+  <main class="panels">
+    <section id="panel-dashboard" class="panel active"></section>
+    <section id="panel-settings" class="panel"></section>
+    <section id="panel-skills" class="panel"></section>
+    <section id="panel-plugins" class="panel"></section>
+    <section id="panel-connectors" class="panel"></section>
+    <section id="panel-sessions" class="panel"></section>
+    <section id="panel-presets" class="panel"></section>
+  </main>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Modal overlay -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div id="modal-box" class="modal-box">
+      <div id="modal-header" class="modal-header"></div>
+      <div id="modal-body" class="modal-body"></div>
+      <div id="modal-footer" class="modal-footer"></div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/tabs/dashboard.js"></script>
+  <script src="/static/js/tabs/settings.js"></script>
+  <script src="/static/js/tabs/skills.js"></script>
+  <script src="/static/js/tabs/plugins.js"></script>
+  <script src="/static/js/tabs/connectors.js"></script>
+  <script src="/static/js/tabs/sessions.js"></script>
+  <script src="/static/js/tabs/presets.js"></script>
+</body>
+</html>
