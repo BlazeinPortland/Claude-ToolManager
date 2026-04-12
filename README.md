@@ -1,6 +1,11 @@
 # Claude Tool Manager
 
 A local web dashboard for managing all [Claude Desktop](https://claude.ai/download) settings — MCP servers, skills, plugins, connectors, sessions, and presets — in one place.
+<img width="1905" height="818" alt="image" src="https://github.com/user-attachments/assets/9f7fc7bd-70c4-485c-83d9-232cd44114d7" />
+
+<img width="1652" height="672" alt="image" src="https://github.com/user-attachments/assets/0e6c0258-d70f-46da-9983-d9503b333d46" />
+
+
 
 ![Dashboard](https://img.shields.io/badge/Python-3.8%2B-blue) ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
