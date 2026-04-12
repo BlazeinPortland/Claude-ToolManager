@@ -4,27 +4,27 @@ App.tabs.dashboard = {
   _refreshTimer: null,
 
   init() {
-    // Auto-refresh rate limits every 60s
+    // Auto-refresh server status every 30s
     this._refreshTimer = setInterval(() => {
-      if (App.currentTab === 'dashboard') this._loadRateLimits();
-    }, 60000);
+      if (App.currentTab === 'dashboard') this._loadServerStatus();
+    }, 30000);
   },
 
   async render() {
     const panel = document.getElementById('panel-dashboard');
     panel.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading dashboard...</div>';
 
-    // Fetch stats first (local, fast) — don't block on rate limits
+    // Fetch stats first (local, fast) — don't block on server status
     const stats = await App.api('/api/dashboard/stats');
 
     let html = '';
 
-    // ── Rate Limits Section (placeholder, filled async) ──
-    html += '<div class="card" id="rl-card">';
-    html += '<div class="card-header"><span class="card-title">Rate Limits</span>';
-    html += `<span class="card-badge badge-dim" id="rl-refresh">loading...</span>`;
+    // ── Server Status Section (placeholder, filled async) ──
+    html += '<div class="card" id="ss-card">';
+    html += '<div class="card-header"><span class="card-title">Server Status</span>';
+    html += `<span class="card-badge badge-green" id="ss-badge">live</span>`;
     html += '</div>';
-    html += '<div id="rl-content"><div class="loading" style="padding:16px"><div class="spinner"></div></div></div>';
+    html += '<div id="ss-content"><div class="loading" style="padding:16px"><div class="spinner"></div></div></div>';
     html += '</div>';
 
     // ── Summary Cards ──
@@ -64,91 +64,74 @@ App.tabs.dashboard = {
 
     panel.innerHTML = html;
 
-    // Load rate limits async (don't block page render)
-    this._loadRateLimits();
+    // Load server status async (don't block page render)
+    this._loadServerStatus();
   },
 
-  async _loadRateLimits() {
+  async _loadServerStatus() {
     try {
-      const limits = await App.api('/api/dashboard/rate-limits');
-      const container = document.getElementById('rl-content');
-      if (container) {
-        container.innerHTML = this._renderRateLimits(limits);
-      }
-      const badge = document.getElementById('rl-refresh');
-      if (badge) badge.textContent = App.timeAgo(Date.now());
+      const status = await App.api('/api/server/status');
+      const container = document.getElementById('ss-content');
+      if (container) container.innerHTML = this._renderServerStatus(status);
     } catch (e) {
-      const container = document.getElementById('rl-content');
-      if (container) {
-        container.innerHTML = '<div class="empty-state" style="padding:12px">Rate limit request failed</div>';
-      }
+      const container = document.getElementById('ss-content');
+      if (container) container.innerHTML = '<div class="empty-state" style="padding:12px">Server status unavailable</div>';
     }
   },
 
-  _renderRateLimits(data) {
-    if (!data || data.error) {
-      return `<div class="empty-state" style="padding:12px">Rate limit data unavailable: ${data?.error || 'unknown error'}</div>`;
+  _renderServerStatus(s) {
+    if (!s || s.error) {
+      return `<div class="empty-state" style="padding:12px">Status unavailable: ${s?.error || 'unknown'}</div>`;
     }
 
-    let html = '';
+    const cfIcon = (ok) => ok
+      ? `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`
+      : `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
 
-    // Try different response formats
-    const fiveHour = data.five_hour || data.fiveHour || data.daily || null;
-    const sevenDay = data.seven_day || data.sevenDay || data.monthly || null;
+    const cf = s.config_files || {};
+    const cfRows = [
+      ['Global Settings', cf.global_settings],
+      ['Project Settings', cf.project_settings],
+      ['Credentials', cf.credentials],
+      ['Stats Cache', cf.stats_cache],
+      ['Cowork State', cf.cowork_state],
+    ];
 
-    if (fiveHour) {
-      const pct = fiveHour.used_percentage || fiveHour.usedPercentage || fiveHour.percentUsed || 0;
-      const resets = fiveHour.resets_at || fiveHour.resetsAt || '';
-      html += this._gauge('5-Hour Window', pct, resets);
+    let html = '<div class="status-grid">';
+    html += `<div class="status-item"><div class="status-item-label">Uptime</div><div class="status-item-value">${s.uptime_str || '—'}</div></div>`;
+    html += `<div class="status-item"><div class="status-item-label">Session Files</div><div class="status-item-value">${s.session_files ?? '—'}</div></div>`;
+    html += `<div class="status-item"><div class="status-item-label">Port</div><div class="status-item-value">${s.port || 9191}</div></div>`;
+    html += `<div class="status-item"><div class="status-item-label">Python</div><div class="status-item-value">${s.python_version || '—'}</div></div>`;
+    html += '</div>';
+
+    html += '<div style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap">';
+    for (const [label, ok] of cfRows) {
+      html += `<div style="display:flex;align-items:center;gap:5px;font-size:13px">
+        ${cfIcon(ok)}
+        <span style="color:${ok ? 'var(--text)' : 'var(--red)'}">${label}</span>
+      </div>`;
     }
+    html += '</div>';
 
-    if (sevenDay) {
-      const pct = sevenDay.used_percentage || sevenDay.usedPercentage || sevenDay.percentUsed || 0;
-      const resets = sevenDay.resets_at || sevenDay.resetsAt || '';
-      html += this._gauge('7-Day Window', pct, resets);
-    }
-
-    if (!fiveHour && !sevenDay) {
-      // Maybe the data is in a different format, show raw keys
-      const keys = Object.keys(data).filter(k => k !== 'error');
-      if (keys.length === 0) {
-        html += '<div class="empty-state" style="padding:12px">No rate limit data in response</div>';
-      } else {
-        // Show whatever we got
-        for (const key of keys) {
-          const val = data[key];
-          if (typeof val === 'object' && val !== null) {
-            const pct = val.used_percentage || val.usedPercentage || val.percentUsed || val.percent_used || 0;
-            const resets = val.resets_at || val.resetsAt || '';
-            html += this._gauge(key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), pct, resets);
-          }
-        }
-        if (!html) {
-          html += `<div class="empty-state" style="padding:12px">Rate limit response keys: ${keys.join(', ')}</div>`;
-        }
-      }
+    if (s.appdata_claude) {
+      html += `<div style="margin-top:10px;font-size:12px;color:var(--text-dim);font-family:var(--font-mono)">${s.appdata_claude}</div>`;
     }
 
     return html;
   },
 
-  _gauge(label, percent, resetsAt) {
-    const pct = Math.min(100, Math.max(0, Math.round(percent)));
-    const level = pct < 50 ? 'low' : pct < 80 ? 'mid' : 'high';
-    const resetStr = resetsAt ? `Resets: ${new Date(resetsAt).toLocaleTimeString()}` : '';
-    return `<div class="gauge">
-      <div class="gauge-label">
-        <span>${label}</span>
-        <span>${pct}% used${resetStr ? ' · ' + resetStr : ''}</span>
-      </div>
-      <div class="gauge-track">
-        <div class="gauge-fill ${level}" style="width:${pct}%"></div>
-      </div>
-    </div>`;
-  },
-
   _statCard(value, label) {
     return `<div class="stat-card"><div class="stat-value">${value}</div><div class="stat-label">${label}</div></div>`;
+  },
+
+  _fmtChartDate(dateStr) {
+    if (!dateStr) return '?';
+    try {
+      const d = new Date(dateStr + 'T12:00:00');
+      const mon = d.toLocaleDateString('en-US', { month: 'short' });
+      const day = d.getDate();
+      return `${mon}<br>${day}`;
+    } catch { return dateStr.slice(5); }
   },
 
   _renderActivityChart(data) {
@@ -160,9 +143,8 @@ App.tabs.dashboard = {
     let labels = '<div class="chart-labels">';
     for (const day of recent) {
       const h = Math.max(2, ((day.messageCount || 0) / maxVal) * 100);
-      const date = day.date ? day.date.slice(5) : '?';
       bars += `<div class="chart-bar" style="height:${h}%"><span class="tooltip">${day.date}: ${day.messageCount} msgs, ${day.toolCallCount || 0} tools</span></div>`;
-      labels += `<div class="chart-label">${date}</div>`;
+      labels += `<div class="chart-label">${this._fmtChartDate(day.date)}</div>`;
     }
     bars += '</div>';
     labels += '</div>';
@@ -196,7 +178,7 @@ App.tabs.dashboard = {
         return `${short}: ${App.fmtNum(day.tokensByModel?.[m] || 0)}`;
       }).join(', ');
       bars += `<div class="chart-bar" style="height:${h}%"><span class="tooltip">${day.date}: ${detail}</span></div>`;
-      labels += `<div class="chart-label">${(day.date || '').slice(5)}</div>`;
+      labels += `<div class="chart-label">${this._fmtChartDate(day.date)}</div>`;
     }
     bars += '</div>';
     labels += '</div>';

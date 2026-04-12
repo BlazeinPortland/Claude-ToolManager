@@ -14,9 +14,9 @@
   --border-glow:  rgba(139, 92, 246, 0.55);
 
   /* Text */
-  --text:      #E2E8F0;
-  --text-dim:  #64748B;
-  --text-muted:#2D3748;
+  --text:      #E8ECF4;
+  --text-dim:  #94A3B8;
+  --text-muted:#56657A;
 
   /* Accent — electric violet */
   --accent:        #8B5CF6;
@@ -65,6 +65,7 @@
 /* ── Body ───────────────────────────────────────────────────────────────── */
 body {
   font-family: var(--font);
+  font-size: 15px;
   background-color: var(--bg);
   /* Dot grid + radial aurora from top */
   background-image:
@@ -72,7 +73,7 @@ body {
     radial-gradient(rgba(99, 102, 241, 0.03) 1px, transparent 1px);
   background-size: 100% 100%, 28px 28px;
   color: var(--text);
-  line-height: 1.5;
+  line-height: 1.55;
   min-height: 100vh;
 }
 
@@ -244,10 +245,10 @@ body {
 }
 
 .card-title {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0.9px;
   color: var(--text-dim);
   font-family: var(--font-mono);
 }
@@ -273,14 +274,14 @@ body {
 
 .item-card-info { flex: 1; min-width: 0; }
 .item-card-name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--text);
-  margin-bottom: 2px;
+  margin-bottom: 3px;
   font-family: var(--font-mono);
 }
 .item-card-desc {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -338,7 +339,7 @@ body {
 
 /* ── Badges ──────────────────────────────────────────────────────────────── */
 .card-badge {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   padding: 3px 10px;
   border-radius: 20px;
@@ -400,7 +401,7 @@ body {
   box-shadow: var(--glow-sm);
 }
 .stat-value {
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 700;
   font-family: var(--font-mono);
   color: var(--cyan);
@@ -408,10 +409,10 @@ body {
   margin-bottom: 6px;
 }
 .stat-label {
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0.8px;
   color: var(--text-dim);
 }
 
@@ -424,7 +425,7 @@ body {
 .gauge-label {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: 13px;
   margin-bottom: 8px;
   color: var(--text-dim);
   font-family: var(--font-mono);
@@ -502,8 +503,9 @@ body {
 }
 .chart-label {
   flex: 1;
-  font-size: 9px;
-  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-dim);
   text-align: center;
   font-family: var(--font-mono);
   overflow: hidden;
@@ -607,11 +609,11 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
+  padding: 5px 12px;
   background: rgba(139, 92, 246, 0.07);
   border: 1px solid rgba(139, 92, 246, 0.18);
   border-radius: 20px;
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--font-mono);
   color: var(--accent-bright);
   transition: all var(--transition);
@@ -686,11 +688,11 @@ table {
 th {
   padding: 10px 14px;
   text-align: left;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.9px;
-  color: var(--text-muted);
+  color: var(--text-dim);
   background: rgba(255, 255, 255, 0.015);
   border-bottom: 1px solid var(--border);
   font-family: var(--font-mono);
@@ -698,9 +700,10 @@ th {
 }
 td {
   padding: 11px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.035);
   color: var(--text);
   vertical-align: middle;
+  font-size: 14px;
 }
 tr:last-child td { border-bottom: none; }
 tr:hover td { background: rgba(139, 92, 246, 0.025); }
@@ -713,8 +716,8 @@ input[type="search"] {
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 8px 12px;
-  font-size: 13px;
+  padding: 9px 13px;
+  font-size: 14px;
   font-family: var(--font);
   transition: border-color var(--transition), box-shadow var(--transition);
   width: 100%;
@@ -890,6 +893,150 @@ code {
 .status-dot.active   { background: var(--green); box-shadow: 0 0 6px rgba(16,185,129,0.6); }
 .status-dot.inactive { background: var(--text-muted); }
 .status-dot.warning  { background: var(--amber); box-shadow: 0 0 6px rgba(245,158,11,0.5); }
+
+/* ── Section titles (skills/plugins/connectors) ──────────────────────────── */
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+/* ── Grid auto (skills/plugins) ──────────────────────────────────────────── */
+.grid-auto {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 10px;
+}
+
+/* ── Item card internals (skills/plugins/connectors) ─────────────────────── */
+/* These match what the JS tabs emit */
+.item-icon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(139, 92, 246, 0.08);
+  border: 1px solid rgba(139, 92, 246, 0.18);
+  border-radius: var(--radius);
+  font-size: 22px;
+  flex-shrink: 0;
+  margin-right: 14px;
+}
+.item-icon svg {
+  width: 24px;
+  height: 24px;
+  color: var(--accent-bright);
+}
+.item-icon.icon-skill   { background: rgba(139, 92, 246, 0.08); border-color: rgba(139,92,246,0.18); }
+.item-icon.icon-plugin  { background: rgba(34, 211, 238, 0.08); border-color: rgba(34,211,238,0.18); }
+.item-icon.icon-plugin svg { color: var(--cyan); }
+.item-icon.icon-market  { background: rgba(16, 185, 129, 0.08); border-color: rgba(16,185,129,0.18); }
+.item-icon.icon-market svg { color: var(--green); }
+
+.item-info {
+  flex: 1;
+  min-width: 0;
+}
+.item-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 3px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.item-desc {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.item-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-family: var(--font-mono);
+}
+.item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: 14px;
+}
+
+/* ── Badge aliases ───────────────────────────────────────────────────────── */
+.badge-blue { /* alias → cyan */
+  color: var(--cyan);
+  background: var(--cyan-dim);
+  border: 1px solid rgba(34, 211, 238, 0.22);
+}
+
+/* ── Project selector label ──────────────────────────────────────────────── */
+.project-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+/* ── Status dots (connectors) ────────────────────────────────────────────── */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+.status-dot.active   { background: var(--green); box-shadow: 0 0 6px rgba(16,185,129,0.6); }
+.status-dot.inactive { background: var(--text-muted); }
+.status-dot.warning  { background: var(--amber); box-shadow: 0 0 6px rgba(245,158,11,0.5); }
+
+/* ── Server status card ──────────────────────────────────────────────────── */
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius);
+}
+.status-item-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-bottom: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.status-item-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {

@@ -6,7 +6,7 @@ Run with: python tool-manager.py [--project <path>]
 Then open: http://localhost:9191
 """
 
-import json, os, shutil, sys, uuid, webbrowser, time, re, subprocess, threading, signal
+import json, os, shutil, sys, uuid, webbrowser, time, re, subprocess, threading, platform
 from datetime import datetime
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -19,6 +19,24 @@ GLOBAL_DIR = Path.home() / ".claude"
 SCRIPT_DIR = Path(__file__).resolve().parent
 STATIC_DIR = SCRIPT_DIR / "static"
 PORT = 9191
+SERVER_START_TIME = time.time()
+
+def _find_appdata_claude():
+    """Find Claude AppData dir robustly — env var first, home-based fallback."""
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        p = Path(appdata) / "Claude"
+        if p.is_dir():
+            return p
+    # Fallback: construct from home directory
+    for candidate in [
+        Path.home() / "AppData" / "Roaming" / "Claude",
+        Path(os.path.expanduser("~")) / "AppData" / "Roaming" / "Claude",
+    ]:
+        if candidate.is_dir():
+            return candidate
+    # Return best guess even if it doesn't exist yet
+    return Path(appdata) / "Claude" if appdata else Path.home() / "AppData" / "Roaming" / "Claude"
 
 def _find_project_dir():
     """Find project .claude/ dir: --project arg, or walk up from cwd."""
@@ -41,7 +59,7 @@ def _find_project_dir():
     return None
 
 PROJECT_DIR = _find_project_dir()
-_APPDATA_CLAUDE = Path(os.environ.get("APPDATA", "")) / "Claude"
+_APPDATA_CLAUDE = _find_appdata_claude()
 SESSIONS_DIRS = [
     _APPDATA_CLAUDE / "claude-code-sessions",
     _APPDATA_CLAUDE / "local-agent-mode-sessions",
@@ -293,6 +311,7 @@ def get_global_skills():
                 "name": fm.get("name", child.name.replace("-", " ").title()),
                 "enabled": enabled,
                 "desc": desc,
+                "icon": fm.get("icon", ""),
                 "scope": "global",
             })
     return result
@@ -337,6 +356,7 @@ def get_project_skills():
             "name": fm.get("name", child.name.replace("-", " ").title()),
             "enabled": enabled,
             "desc": desc,
+            "icon": fm.get("icon", ""),
             "scope": "project",
         })
     return result
@@ -482,39 +502,40 @@ def _parse_ts(val):
     return 0
 
 def get_sessions():
-    """Discover Claude Code sessions from AppData."""
+    """Discover Claude Code sessions from AppData (resilient rglob scan)."""
     sessions = []
     seen_ids = set()
     for sessions_root in SESSIONS_DIRS:
         if not sessions_root.is_dir():
             continue
         try:
-            for top in sessions_root.iterdir():
-                if not top.is_dir():
+            for jp in sessions_root.rglob("local_*.json"):
+                # Accept files 2-4 levels deep (UUID/UUID/local_*.json)
+                try:
+                    depth = len(jp.relative_to(sessions_root).parts)
+                except ValueError:
                     continue
-                for child in top.iterdir():
-                    if not child.is_dir():
+                if depth < 2 or depth > 4:
+                    continue
+                try:
+                    data = json.loads(jp.read_text(encoding="utf-8"))
+                    sid = jp.stem.replace("local_", "")
+                    if sid in seen_ids:
                         continue
-                    for jp in child.glob("local_*.json"):
-                        try:
-                            data = json.loads(jp.read_text(encoding="utf-8"))
-                            sid = jp.stem.replace("local_", "")
-                            if sid in seen_ids:
-                                continue
-                            seen_ids.add(sid)
-                            sessions.append({
-                                "id": sid,
-                                "title": data.get("title", data.get("initialMessage", sid))[:120],
-                                "created": _parse_ts(data.get("createdAt", 0)),
-                                "lastActivity": _parse_ts(data.get("lastActivityAt", 0)),
-                                "archived": data.get("isArchived", False),
-                                "model": data.get("model", ""),
-                                "cwd": data.get("cwd", ""),
-                                "jsonPath": str(jp),
-                                "folderPath": str(jp.parent / sid) if (jp.parent / sid).is_dir() else "",
-                            })
-                        except (json.JSONDecodeError, OSError):
-                            continue
+                    seen_ids.add(sid)
+                    sessions.append({
+                        "id": sid,
+                        "title": data.get("title", data.get("initialMessage", sid))[:120],
+                        "created": _parse_ts(data.get("createdAt", 0)),
+                        "lastActivity": _parse_ts(data.get("lastActivityAt", 0)),
+                        "archived": data.get("isArchived", False),
+                        "model": data.get("model", ""),
+                        "cwd": data.get("cwd", ""),
+                        "jsonPath": str(jp),
+                        "folderPath": str(jp.parent / sid) if (jp.parent / sid).is_dir() else "",
+                    })
+                except (json.JSONDecodeError, OSError, ValueError):
+                    continue
         except OSError:
             pass
     sessions.sort(key=lambda s: s["lastActivity"], reverse=True)
@@ -626,34 +647,71 @@ def delete_preset(preset_id):
 _server_instance = None  # set in main()
 
 def shutdown_server():
-    """Shut down the web server gracefully."""
-    if _server_instance:
-        threading.Thread(target=_server_instance.shutdown, daemon=True).start()
+    """Force-exit after brief delay so HTTP response gets sent first."""
+    def _exit():
+        time.sleep(0.4)
+        os._exit(0)
+    threading.Thread(target=_exit, daemon=True).start()
     return {"ok": True}
 
 def restart_claude_desktop():
-    """Kill Claude Desktop and relaunch it."""
+    """Kill Claude Desktop (MSIX/WindowsApps) and relaunch via shell protocol."""
     try:
-        # Kill existing Claude Desktop processes (not claude-code CLI)
-        # Claude Desktop runs from WindowsApps; claude-code CLI from AppData/Roaming
-        result = subprocess.run(
-            ["powershell", "-Command",
+        # Kill only the WindowsApps Claude (Desktop), not the CLI
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
              "Get-Process -Name 'claude' -ErrorAction SilentlyContinue | "
              "Where-Object { $_.Path -like '*WindowsApps*' } | "
              "Stop-Process -Force"],
-            capture_output=True, text=True
+            capture_output=True, timeout=10
         )
-        time.sleep(2)
-
-        # Relaunch via Windows Store app protocol
+        time.sleep(1.5)
+        # explorer.exe shell: protocol is the most reliable way to launch MSIX apps
         subprocess.Popen(
-            ["powershell", "-Command",
-             "Start-Process 'shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude'"],
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            ["explorer.exe", "shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude"],
+            creationflags=subprocess.DETACHED_PROCESS
         )
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+def get_server_status():
+    """Return server health, uptime, session counts, and config file status."""
+    uptime_sec = int(time.time() - SERVER_START_TIME)
+    hrs, rem = divmod(uptime_sec, 3600)
+    mins, secs = divmod(rem, 60)
+    uptime_str = f"{hrs}h {mins}m {secs}s" if hrs else (f"{mins}m {secs}s" if mins else f"{secs}s")
+
+    # Quick session count (avoid full parse for speed)
+    total_files = 0
+    for d in SESSIONS_DIRS:
+        if d.is_dir():
+            try:
+                total_files += sum(1 for _ in d.rglob("local_*.json"))
+            except OSError:
+                pass
+
+    # Config file status
+    config_files = {
+        "global_settings":  (GLOBAL_DIR / "settings.json").is_file(),
+        "credentials":      (GLOBAL_DIR / ".credentials.json").is_file(),
+        "stats_cache":      (GLOBAL_DIR / "stats-cache.json").is_file(),
+        "project_settings": bool(PROJECT_DIR and (PROJECT_DIR / "settings.local.json").is_file()),
+        "cowork_state":     bool(PROJECT_DIR and (PROJECT_DIR / "cowork-state.json").is_file()),
+    }
+
+    sessions_dirs_info = [{"path": str(d), "exists": d.is_dir()} for d in SESSIONS_DIRS]
+
+    return {
+        "uptime_str": uptime_str,
+        "uptime_seconds": uptime_sec,
+        "session_files": total_files,
+        "config_files": config_files,
+        "sessions_dirs": sessions_dirs_info,
+        "python_version": platform.python_version(),
+        "port": PORT,
+        "appdata_claude": str(_APPDATA_CLAUDE),
+    }
 
 # ── HTTP Server ───────────────────────────────────────────────────────────────
 
@@ -743,6 +801,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/connectors": get_connectors,
             "/api/sessions": get_sessions,
             "/api/presets": get_presets,
+            "/api/server/status": get_server_status,
         }
 
         handler = routes.get(path)

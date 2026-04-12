@@ -22,7 +22,7 @@ App.tabs.plugins = {
     const enabledCount = plugins.filter(p => p.enabled).length;
     html += '<div class="section-title">';
     html += '<span>Installed Plugins</span>';
-    html += `<span class="card-badge badge-blue">${enabledCount} / ${plugins.length} enabled</span>`;
+    html += `<span class="card-badge badge-cyan">${enabledCount} / ${plugins.length} enabled</span>`;
     html += '</div>';
 
     if (plugins.length) {
@@ -30,7 +30,7 @@ App.tabs.plugins = {
       for (const p of plugins) {
         const onChange = `App.tabs.plugins._toggle('${this._esc(p.id)}', this.checked)`;
         html += `<div class="item-card">
-          <div class="item-icon">🧩</div>
+          <div class="item-icon">${this._pluginIcon()}</div>
           <div class="item-info">
             <div class="item-name">${this._esc(p.name)}</div>
             <div class="item-desc">v${this._esc(p.version)} · ${this._esc(p.marketplace)}</div>
@@ -72,7 +72,7 @@ App.tabs.plugins = {
       html += '<div class="grid grid-auto">';
       for (const m of mktEntries) {
         html += `<div class="item-card">
-          <div class="item-icon">🏪</div>
+          <div class="item-icon">${this._marketplaceIcon()}</div>
           <div class="item-info">
             <div class="item-name">${this._esc(m.name)}</div>
             <div class="item-desc">${this._esc(m.sourceType)}: ${this._esc(m.repo)}</div>
@@ -84,6 +84,21 @@ App.tabs.plugins = {
     }
 
     panel.innerHTML = html;
+  },
+
+  _pluginIcon() {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5l6.74-6.76z"/>
+      <line x1="16" y1="8" x2="2" y2="22"/>
+      <line x1="17.5" y1="15" x2="9" y2="15"/>
+    </svg>`;
+  },
+
+  _marketplaceIcon() {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--cyan)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+      <polyline points="9 22 9 12 15 12 15 22"/>
+    </svg>`;
   },
 
   async _toggle(pluginId, enable) {

@@ -16,7 +16,8 @@
       <h1 class="logo">claude_tool_manager<span style="color:var(--text-muted);font-weight:400"> v2</span></h1>
     </div>
     <div class="header-right">
-      <select id="project-select" class="project-select" title="Active project"></select>
+      <label class="project-label" title="Select the active project to manage per-project skills, permissions, and cowork settings">Project:</label>
+      <select id="project-select" class="project-select" title="Active project — affects project-scoped settings only (global settings are always shown)"></select>
       <span id="path-info" class="path-info"></span>
       <button class="btn btn-ghost btn-sm header-btn" onclick="App.restartClaude()" title="Restart Claude Desktop to apply changes">Restart Claude</button>
       <button class="btn btn-ghost btn-sm header-btn header-btn-danger" onclick="App.shutdownServer()" title="Shut down the Tool Manager server">Shutdown</button>

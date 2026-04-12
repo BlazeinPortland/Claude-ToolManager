@@ -27,22 +27,27 @@ App.tabs.connectors = {
     if (oauth.length) {
       html += '<div class="grid grid-auto">';
       for (const c of oauth) {
-        let statusBadge, statusClass;
+        let statusBadge, statusClass, iconSvg;
         if (c.authenticated) {
           statusBadge = 'Authenticated';
           statusClass = 'badge-green';
+          iconSvg = this._oauthIcon('green');
         } else if (c.needsAuth) {
           statusBadge = 'Needs Auth';
           statusClass = 'badge-amber';
+          iconSvg = this._oauthIcon('amber');
         } else if (c.hasToken) {
           statusBadge = 'Token Expired';
           statusClass = 'badge-red';
+          iconSvg = this._oauthIcon('red');
         } else {
           statusBadge = 'Not Connected';
           statusClass = 'badge-dim';
+          iconSvg = this._oauthIcon('dim');
         }
 
         html += `<div class="item-card">
+          <div class="item-icon">${iconSvg}</div>
           <div class="item-info">
             <div class="item-name">${this._esc(c.displayName)}</div>
             <div class="item-meta" style="font-family:var(--font-mono)">${this._esc(c.serverName.split('|')[0])}</div>
@@ -61,7 +66,7 @@ App.tabs.connectors = {
     const activeCount = cowork.filter(c => c.active).length;
     html += '<div class="section-title" style="margin-top:32px">';
     html += '<span>Cowork Connectors</span>';
-    html += `<span class="card-badge badge-blue">${activeCount} / ${cowork.length} active</span>`;
+    html += `<span class="card-badge badge-cyan">${activeCount} / ${cowork.length} active</span>`;
     html += '</div>';
 
     if (cowork.length) {
@@ -73,7 +78,7 @@ App.tabs.connectors = {
           : '';
 
         html += `<div class="item-card">
-          <div class="item-icon">${c.icon || '🔧'}</div>
+          <div class="item-icon" style="font-size:22px;display:flex;align-items:center;justify-content:center">${c.icon || this._coworkIconSvg(c.active)}</div>
           <div class="item-info">
             <div class="item-name">${this._esc(c.name)}</div>
             <div class="item-desc">${this._esc(c.desc)}</div>
@@ -91,6 +96,24 @@ App.tabs.connectors = {
     }
 
     panel.innerHTML = html;
+  },
+
+  _oauthIcon(state) {
+    const colors = { green: 'var(--green)', amber: 'var(--amber)', red: 'var(--red)', dim: 'var(--text-dim)' };
+    const color = colors[state] || 'var(--text-dim)';
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+    </svg>`;
+  },
+
+  _coworkIconSvg(active) {
+    const color = active ? 'var(--accent)' : 'var(--text-dim)';
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
+      <path d="M15.54 8.46a5 5 0 0 1 0 7.07M8.46 8.46a5 5 0 0 0 0 7.07"/>
+    </svg>`;
   },
 
   async _toggleCowork(id, active) {
