@@ -23,21 +23,32 @@ PORT = 9191
 SERVER_START_TIME = time.time()
 
 def _find_appdata_claude():
-    """Find Claude AppData dir robustly — env var first, home-based fallback."""
-    appdata = os.environ.get("APPDATA", "")
-    if appdata:
-        p = Path(appdata) / "Claude"
-        if p.is_dir():
-            return p
-    # Fallback: construct from home directory
-    for candidate in [
-        Path.home() / "AppData" / "Roaming" / "Claude",
-        Path(os.path.expanduser("~")) / "AppData" / "Roaming" / "Claude",
-    ]:
-        if candidate.is_dir():
-            return candidate
-    # Return best guess even if it doesn't exist yet
-    return Path(appdata) / "Claude" if appdata else Path.home() / "AppData" / "Roaming" / "Claude"
+    """Find Claude AppData/Application Support dir — cross-platform."""
+    system = platform.system()
+
+    if system == "Darwin":  # macOS
+        candidates = [
+            Path.home() / "Library" / "Application Support" / "Claude",
+        ]
+    elif system == "Windows":
+        appdata = os.environ.get("APPDATA", "")
+        candidates = [
+            Path(appdata) / "Claude" if appdata else None,
+            Path.home() / "AppData" / "Roaming" / "Claude",
+        ]
+        candidates = [c for c in candidates if c]
+    else:  # Linux / other
+        xdg = os.environ.get("XDG_CONFIG_HOME", "")
+        candidates = [
+            Path(xdg) / "Claude" if xdg else None,
+            Path.home() / ".config" / "Claude",
+        ]
+        candidates = [c for c in candidates if c]
+
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return candidates[0]  # best guess even if missing
 
 def _find_project_dir():
     """Find project .claude/ dir: --project arg, or walk up from cwd."""
@@ -53,10 +64,6 @@ def _find_project_dir():
         if candidate.is_dir() and (candidate / "settings.local.json").exists():
             return candidate
         d = d.parent
-    # Fallback: C:\Software\.claude
-    fallback = Path(r"C:\Software\.claude")
-    if fallback.is_dir():
-        return fallback
     return None
 
 PROJECT_DIR = _find_project_dir()
@@ -656,22 +663,31 @@ def shutdown_server():
     return {"ok": True}
 
 def restart_claude_desktop():
-    """Kill Claude Desktop (MSIX/WindowsApps) and relaunch via shell protocol."""
+    """Kill Claude Desktop and relaunch — cross-platform."""
+    system = platform.system()
     try:
-        # Kill only the WindowsApps Claude (Desktop), not the CLI
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-Process -Name 'claude' -ErrorAction SilentlyContinue | "
-             "Where-Object { $_.Path -like '*WindowsApps*' } | "
-             "Stop-Process -Force"],
-            capture_output=True, timeout=10
-        )
-        time.sleep(1.5)
-        # explorer.exe shell: protocol is the most reliable way to launch MSIX apps
-        subprocess.Popen(
-            ["explorer.exe", "shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude"],
-            creationflags=subprocess.DETACHED_PROCESS
-        )
+        if system == "Darwin":  # macOS
+            subprocess.run(["pkill", "-x", "Claude"], capture_output=True)
+            time.sleep(1.5)
+            subprocess.Popen(["open", "-a", "Claude"])
+        elif system == "Windows":
+            # Kill only the WindowsApps (Store) Claude, not the CLI
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-Process -Name 'claude' -ErrorAction SilentlyContinue | "
+                 "Where-Object { $_.Path -like '*WindowsApps*' } | "
+                 "Stop-Process -Force"],
+                capture_output=True, timeout=10
+            )
+            time.sleep(1.5)
+            subprocess.Popen(
+                ["explorer.exe", "shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude"],
+                creationflags=subprocess.DETACHED_PROCESS
+            )
+        else:  # Linux
+            subprocess.run(["pkill", "-x", "claude"], capture_output=True)
+            time.sleep(1.5)
+            subprocess.Popen(["claude-desktop"])
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
