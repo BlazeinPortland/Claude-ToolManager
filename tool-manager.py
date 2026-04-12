@@ -10,6 +10,7 @@ import json, os, shutil, sys, uuid, webbrowser, time, re, subprocess, threading,
 from datetime import datetime
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 import urllib.request, urllib.error, ssl
 
@@ -682,12 +683,12 @@ def get_server_status():
     mins, secs = divmod(rem, 60)
     uptime_str = f"{hrs}h {mins}m {secs}s" if hrs else (f"{mins}m {secs}s" if mins else f"{secs}s")
 
-    # Quick session count (avoid full parse for speed)
+    # Quick session count — count top-level UUID dirs (one per session, instant)
     total_files = 0
     for d in SESSIONS_DIRS:
         if d.is_dir():
             try:
-                total_files += sum(1 for _ in d.rglob("local_*.json"))
+                total_files += sum(1 for e in d.iterdir() if e.is_dir())
             except OSError:
                 pass
 
@@ -898,9 +899,12 @@ def main():
     print(f"  Static files:   {STATIC_DIR}")
     print()
 
+    class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+
     global _server_instance
     try:
-        server = HTTPServer(("0.0.0.0", PORT), Handler)
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
         _server_instance = server
     except OSError as e:
         print(f"  ERROR: Could not bind port {PORT}: {e}")
