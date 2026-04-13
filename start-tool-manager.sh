@@ -33,6 +33,14 @@ if [ ! -f "$APP_FILE" ]; then
     exit 1
 fi
 
+# Kill any stale instance on port 9191
+STALE=$(lsof -ti tcp:9191 2>/dev/null)
+if [ -n "$STALE" ]; then
+    echo "  Stopping old instance (PID $STALE)..."
+    kill -9 $STALE 2>/dev/null
+    sleep 0.5
+fi
+
 echo ""
 echo "  Starting Claude Tool Manager..."
 echo "  Using Python: $(which $PYTHON) ($($PYTHON --version))"

@@ -35,6 +35,14 @@ if (-not (Test-Path $AppFile)) {
     pause; exit 1
 }
 
+# Kill any stale tool-manager process already on port 9191
+$stale = (Get-NetTCPConnection -LocalPort 9191 -ErrorAction SilentlyContinue).OwningProcess | Select-Object -Unique
+if ($stale) {
+    Write-Host "  Stopping old instance (PID $stale)..." -ForegroundColor DarkGray
+    $stale | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 800
+}
+
 Write-Host ""
 Write-Host "  Starting Claude Tool Manager..." -ForegroundColor Cyan
 Write-Host "  Using Python: $PythonExe" -ForegroundColor DarkGray
