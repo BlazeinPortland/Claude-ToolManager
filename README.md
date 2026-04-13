@@ -30,7 +30,7 @@ A local web dashboard for managing all [Claude Desktop](https://claude.ai/downlo
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/Claude-ToolManager.git
+git clone https://github.com/BlazeinPortland/Claude-ToolManager.git
 cd Claude-ToolManager
 
 # Make launcher executable
@@ -46,7 +46,7 @@ Then open **http://localhost:9191** in your browser.
 
 ```powershell
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/Claude-ToolManager.git
+git clone https://github.com/BlazeinPortland/Claude-ToolManager.git
 cd Claude-ToolManager
 
 # Run
