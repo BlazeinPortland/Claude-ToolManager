@@ -176,7 +176,7 @@ const App = {
         {
           label: 'Shutdown', class: 'btn-danger',
           action: async () => {
-            await this.api('/api/server/shutdown');
+            await this.api('/api/server/shutdown', {});
             document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:var(--text-dim);font-size:18px;background:var(--bg)">Server has been shut down.</div>';
           },
         },
@@ -194,7 +194,7 @@ const App = {
           label: 'Restart Claude', class: 'btn-primary',
           action: async () => {
             this.toast('Restarting Claude Desktop...', 'info');
-            const result = await this.api('/api/claude/restart');
+            const result = await this.api('/api/claude/restart', {});
             if (result.ok) {
               this.toast('Claude Desktop is restarting', 'success');
             } else {

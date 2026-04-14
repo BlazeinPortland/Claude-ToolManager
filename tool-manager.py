@@ -183,11 +183,116 @@ def get_projects():
 # ── Dashboard endpoints ───────────────────────────────────────────────────────
 
 def get_dashboard_stats():
-    """Read stats-cache.json for usage analytics."""
-    stats = _read_json(GLOBAL_DIR / "stats-cache.json")
-    if not stats:
-        return {"error": "stats-cache.json not found"}
-    return stats
+    """Build fresh dashboard stats from session files, supplemented by stats-cache."""
+    cache = _read_json(GLOBAL_DIR / "stats-cache.json") or {}
+
+    # ── Scan all session files for live data ──────────────────────────────
+    day_msgs    = {}   # date_str -> {messageCount, toolCallCount}
+    day_tokens  = {}   # date_str -> {model -> outputTokens}
+    model_totals = {}  # model -> {inputTokens, outputTokens, ...}
+    hour_counts = {}
+    total_msgs  = 0
+    first_ts    = None
+    longest     = None
+
+    for d in SESSIONS_DIRS:
+        if not d.is_dir():
+            continue
+        try:
+            for jp in d.rglob("local_*.json"):
+                try:
+                    data = json.loads(jp.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+
+                created_ms = data.get("createdAt") or data.get("lastActivityAt") or 0
+                if not created_ms:
+                    # Fall back to file mtime in milliseconds
+                    created_ms = int(jp.stat().st_mtime * 1000)
+
+                turns = data.get("completedTurns", 0)
+                model = data.get("model", "unknown")
+
+                if not created_ms:
+                    continue
+
+                ts_sec = created_ms / 1000
+                dt = datetime.fromtimestamp(ts_sec)
+                date_str = dt.strftime("%Y-%m-%d")
+                hour = dt.hour
+
+                # Daily activity
+                slot = day_msgs.setdefault(date_str, {"date": date_str, "messageCount": 0, "toolCallCount": 0})
+                slot["messageCount"] += turns * 2  # approx: each turn = 1 user + 1 assistant
+                total_msgs += turns * 2
+
+                # Hour histogram
+                hour_counts[hour] = hour_counts.get(hour, 0) + 1
+
+                # Per-model token tracking (use cache data if available for accuracy)
+                tok_slot = day_tokens.setdefault(date_str, {})
+                # We don't have per-session token counts in session files, just track model presence
+                tok_slot[model] = tok_slot.get(model, 0)
+
+                # Model totals (basic)
+                mt = model_totals.setdefault(model, {"inputTokens": 0, "outputTokens": 0,
+                                                      "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0})
+
+                # Longest session
+                if longest is None or turns > longest.get("messageCount", 0):
+                    longest = {"sessionId": data.get("sessionId", ""), "messageCount": turns}
+
+                # First session date
+                if first_ts is None or ts_sec < first_ts:
+                    first_ts = ts_sec
+        except OSError:
+            pass
+
+    # ── Merge cache token data where available ────────────────────────────
+    # Use cache's modelUsage totals (accurate) if present
+    if cache.get("modelUsage"):
+        model_totals = cache["modelUsage"]
+
+    # Merge daily token data from cache (accurate) with session-derived date coverage
+    cache_daily_tokens = {d["date"]: d for d in cache.get("dailyModelTokens", [])}
+    for date_str in sorted(day_tokens.keys()):
+        if date_str in cache_daily_tokens:
+            day_tokens[date_str] = cache_daily_tokens[date_str].get("tokensByModel", day_tokens[date_str])
+        else:
+            day_tokens[date_str] = {}
+
+    # Build sorted daily activity list (all dates we know about)
+    all_dates = sorted(set(list(day_msgs.keys()) + list(cache_daily_tokens.keys())))
+
+    # For dates only in cache, pull from cache
+    cache_daily_msgs = {d["date"]: d for d in cache.get("dailyActivity", [])}
+    daily_activity = []
+    for date_str in all_dates:
+        if date_str in day_msgs:
+            daily_activity.append(day_msgs[date_str])
+        elif date_str in cache_daily_msgs:
+            daily_activity.append(cache_daily_msgs[date_str])
+
+    daily_model_tokens = [
+        {"date": d, "tokensByModel": day_tokens.get(d, {})}
+        for d in all_dates
+    ]
+
+    total_sessions = sum(
+        sum(1 for _ in sd.rglob("local_*.json"))
+        for sd in SESSIONS_DIRS if sd.is_dir()
+    )
+
+    return {
+        "totalSessions": total_sessions,
+        "totalMessages": cache.get("totalMessages", total_msgs),
+        "firstSessionDate": datetime.fromtimestamp(first_ts).isoformat() if first_ts else cache.get("firstSessionDate"),
+        "longestSession": longest or cache.get("longestSession"),
+        "hourCounts": hour_counts or cache.get("hourCounts", {}),
+        "modelUsage": model_totals,
+        "dailyActivity": daily_activity,
+        "dailyModelTokens": daily_model_tokens,
+    }
 
 _rate_limit_cache = {"data": None, "time": 0}
 
