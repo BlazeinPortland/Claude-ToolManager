@@ -23,20 +23,64 @@ PORT = 9191
 SERVER_START_TIME = time.time()
 
 def _find_appdata_claude():
-    """Find Claude AppData/Application Support dir — cross-platform."""
+    """Find Claude AppData/Application Support dir — cross-platform.
+
+    On Windows, Claude Desktop (MSIX) stores its files under
+    AppData\\Local\\Packages\\Claude_<id>\\LocalCache\\Roaming\\Claude\\
+    and creates an NTFS junction at AppData\\Roaming\\Claude → that location.
+    Processes launched via File Explorer (unpackaged) cannot follow that
+    junction, so we always prefer the real MSIX path over the junction.
+    """
     system = platform.system()
 
-    if system == "Darwin":  # macOS
-        candidates = [
-            Path.home() / "Library" / "Application Support" / "Claude",
-        ]
-    elif system == "Windows":
+    if system == "Windows":
+        candidates = []
+
+        # 1. Prefer real MSIX package path — no junction traversal needed
+        packages_dir = Path.home() / "AppData" / "Local" / "Packages"
+        try:
+            for pkg in packages_dir.iterdir():
+                if pkg.name.startswith("Claude_"):
+                    msix_claude = pkg / "LocalCache" / "Roaming" / "Claude"
+                    try:
+                        if msix_claude.is_dir() or next(msix_claude.iterdir(), None) is not None:
+                            candidates.append(msix_claude)
+                    except OSError:
+                        candidates.append(msix_claude)
+        except OSError:
+            pass
+
+        # 2. Fallback: try to resolve the junction to get the real path
         appdata = os.environ.get("APPDATA", "")
-        candidates = [
+        junction_candidates = [
             Path(appdata) / "Claude" if appdata else None,
             Path.home() / "AppData" / "Roaming" / "Claude",
         ]
-        candidates = [c for c in candidates if c]
+        for jc in junction_candidates:
+            if jc is None:
+                continue
+            try:
+                real = jc.resolve()
+                if real not in candidates:
+                    candidates.append(real)
+            except OSError:
+                pass
+            candidates.append(jc)  # keep the junction itself as last resort
+
+        for c in candidates:
+            try:
+                if c.is_dir():
+                    return c
+                if next(c.iterdir(), None) is not None or c.exists():
+                    return c
+            except OSError:
+                pass
+        return candidates[0] if candidates else Path.home() / "AppData" / "Roaming" / "Claude"
+
+    elif system == "Darwin":  # macOS
+        candidates = [
+            Path.home() / "Library" / "Application Support" / "Claude",
+        ]
     else:  # Linux / other
         xdg = os.environ.get("XDG_CONFIG_HOME", "")
         candidates = [
@@ -46,9 +90,12 @@ def _find_appdata_claude():
         candidates = [c for c in candidates if c]
 
     for c in candidates:
-        if c.is_dir():
-            return c
-    return candidates[0]  # best guess even if missing
+        try:
+            if c.is_dir():
+                return c
+        except OSError:
+            pass
+    return candidates[0]
 
 def _find_project_dir():
     """Find project .claude/ dir: --project arg, or walk up from cwd."""
@@ -259,10 +306,12 @@ def get_dashboard_stats():
         for d in all_dates
     ]
 
-    total_sessions = sum(
-        sum(1 for _ in sd.rglob("local_*.json"))
-        for sd in SESSIONS_DIRS if sd.is_dir()
-    )
+    total_sessions = 0
+    for sd in SESSIONS_DIRS:
+        try:
+            total_sessions += sum(1 for _ in sd.rglob("local_*.json"))
+        except OSError:
+            pass
 
     return {
         "totalSessions": total_sessions,
@@ -776,6 +825,52 @@ def restart_claude_desktop():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def _test_rglob():
+    """Diagnostic: compare Path.rglob, os.walk, and glob.glob for session dirs."""
+    import glob as glob_mod
+    result = {
+        "appdata_env": os.environ.get("APPDATA", "(not set)"),
+        "home": str(Path.home()),
+        "appdata_claude": str(_APPDATA_CLAUDE),
+        "sessions_dirs": [],
+    }
+    for d in SESSIONS_DIRS:
+        info = {"path": str(d)}
+        try:
+            info["is_dir_result"] = d.is_dir()
+        except Exception as e:
+            info["is_dir_result"] = f"ERROR: {e}"
+        # Test rglob
+        try:
+            files = list(d.rglob("local_*.json"))
+            info["rglob_count"] = len(files)
+        except OSError as e:
+            info["rglob_error"] = str(e)
+            info["rglob_count"] = 0
+        # Test os.walk
+        try:
+            walk_count = 0
+            for root, dirs, files in os.walk(str(d)):
+                for f in files:
+                    if f.startswith("local_") and f.endswith(".json"):
+                        walk_count += 1
+            info["oswalk_count"] = walk_count
+        except Exception as e:
+            info["oswalk_error"] = str(e)
+        # Test glob.glob
+        try:
+            info["glob_count"] = len(glob_mod.glob(str(d) + "/**/local_*.json", recursive=True))
+        except Exception as e:
+            info["glob_error"] = str(e)
+        # Test os.scandir top level
+        try:
+            entries = list(os.scandir(str(d)))
+            info["scandir_top"] = len(entries)
+        except Exception as e:
+            info["scandir_error"] = str(e)
+        result["sessions_dirs"].append(info)
+    return result
+
 def get_server_status():
     """Return server health, uptime, session counts, and config file status."""
     uptime_sec = int(time.time() - SERVER_START_TIME)
@@ -909,6 +1004,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/sessions": get_sessions,
             "/api/presets": get_presets,
             "/api/server/status": get_server_status,
+            "/api/test-rglob": _test_rglob,
         }
 
         handler = routes.get(path)
@@ -1051,8 +1147,15 @@ def main():
     print("  Claude Tool Manager v2")
     print(f"  Global config:  {GLOBAL_DIR}")
     print(f"  Project config: {PROJECT_DIR or '(none)'}")
-    print(f"  Sessions dirs:  {', '.join(str(d) for d in SESSIONS_DIRS)}")
+    print(f"  AppData Claude: {_APPDATA_CLAUDE}")
+    for d in SESSIONS_DIRS:
+        try:
+            count = sum(1 for _ in d.rglob("local_*.json"))
+            print(f"  Sessions dir:   {d}  [{count} files]")
+        except OSError as e:
+            print(f"  Sessions dir:   {d}  [ERROR: {e}]")
     print(f"  Static files:   {STATIC_DIR}")
+    print(f"  APPDATA env:    {os.environ.get('APPDATA', '(not set)')}")
     print()
 
     class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
