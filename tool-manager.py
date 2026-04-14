@@ -196,57 +196,38 @@ def get_dashboard_stats():
     longest     = None
 
     for d in SESSIONS_DIRS:
-        if not d.is_dir():
-            continue
         try:
-            for jp in d.rglob("local_*.json"):
-                try:
-                    data = json.loads(jp.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-
-                created_ms = data.get("createdAt") or data.get("lastActivityAt") or 0
-                if not created_ms:
-                    # Fall back to file mtime in milliseconds
-                    created_ms = int(jp.stat().st_mtime * 1000)
-
-                turns = data.get("completedTurns", 0)
-                model = data.get("model", "unknown")
-
-                if not created_ms:
-                    continue
-
-                ts_sec = created_ms / 1000
-                dt = datetime.fromtimestamp(ts_sec)
-                date_str = dt.strftime("%Y-%m-%d")
-                hour = dt.hour
-
-                # Daily activity
-                slot = day_msgs.setdefault(date_str, {"date": date_str, "messageCount": 0, "toolCallCount": 0})
-                slot["messageCount"] += turns * 2  # approx: each turn = 1 user + 1 assistant
-                total_msgs += turns * 2
-
-                # Hour histogram
-                hour_counts[hour] = hour_counts.get(hour, 0) + 1
-
-                # Per-model token tracking (use cache data if available for accuracy)
-                tok_slot = day_tokens.setdefault(date_str, {})
-                # We don't have per-session token counts in session files, just track model presence
-                tok_slot[model] = tok_slot.get(model, 0)
-
-                # Model totals (basic)
-                mt = model_totals.setdefault(model, {"inputTokens": 0, "outputTokens": 0,
-                                                      "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0})
-
-                # Longest session
-                if longest is None or turns > longest.get("messageCount", 0):
-                    longest = {"sessionId": data.get("sessionId", ""), "messageCount": turns}
-
-                # First session date
-                if first_ts is None or ts_sec < first_ts:
-                    first_ts = ts_sec
+            session_files_iter = list(d.rglob("local_*.json"))
         except OSError:
-            pass
+            continue
+        for jp in session_files_iter:
+            try:
+                data = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            created_ms = data.get("createdAt") or data.get("lastActivityAt") or 0
+            if not created_ms:
+                created_ms = int(jp.stat().st_mtime * 1000)
+            if not created_ms:
+                continue
+            turns = data.get("completedTurns", 0)
+            model = data.get("model", "unknown")
+            ts_sec = created_ms / 1000
+            dt = datetime.fromtimestamp(ts_sec)
+            date_str = dt.strftime("%Y-%m-%d")
+            hour = dt.hour
+            slot = day_msgs.setdefault(date_str, {"date": date_str, "messageCount": 0, "toolCallCount": 0})
+            slot["messageCount"] += turns * 2
+            total_msgs += turns * 2
+            hour_counts[hour] = hour_counts.get(hour, 0) + 1
+            tok_slot = day_tokens.setdefault(date_str, {})
+            tok_slot[model] = tok_slot.get(model, 0)
+            model_totals.setdefault(model, {"inputTokens": 0, "outputTokens": 0,
+                                            "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0})
+            if longest is None or turns > longest.get("messageCount", 0):
+                longest = {"sessionId": data.get("sessionId", ""), "messageCount": turns}
+            if first_ts is None or ts_sec < first_ts:
+                first_ts = ts_sec
 
     # ── Merge cache token data where available ────────────────────────────
     # Use cache's modelUsage totals (accurate) if present
@@ -619,38 +600,36 @@ def get_sessions():
     sessions = []
     seen_ids = set()
     for sessions_root in SESSIONS_DIRS:
-        if not sessions_root.is_dir():
-            continue
         try:
-            for jp in sessions_root.rglob("local_*.json"):
-                # Accept files 2-4 levels deep (UUID/UUID/local_*.json)
-                try:
-                    depth = len(jp.relative_to(sessions_root).parts)
-                except ValueError:
-                    continue
-                if depth < 2 or depth > 4:
-                    continue
-                try:
-                    data = json.loads(jp.read_text(encoding="utf-8"))
-                    sid = jp.stem.replace("local_", "")
-                    if sid in seen_ids:
-                        continue
-                    seen_ids.add(sid)
-                    sessions.append({
-                        "id": sid,
-                        "title": data.get("title", data.get("initialMessage", sid))[:120],
-                        "created": _parse_ts(data.get("createdAt", 0)),
-                        "lastActivity": _parse_ts(data.get("lastActivityAt", 0)),
-                        "archived": data.get("isArchived", False),
-                        "model": data.get("model", ""),
-                        "cwd": data.get("cwd", ""),
-                        "jsonPath": str(jp),
-                        "folderPath": str(jp.parent / sid) if (jp.parent / sid).is_dir() else "",
-                    })
-                except (json.JSONDecodeError, OSError, ValueError):
-                    continue
+            all_files = list(sessions_root.rglob("local_*.json"))
         except OSError:
-            pass
+            continue
+        for jp in all_files:
+            try:
+                depth = len(jp.relative_to(sessions_root).parts)
+            except ValueError:
+                continue
+            if depth < 2 or depth > 4:
+                continue
+            try:
+                data = json.loads(jp.read_text(encoding="utf-8"))
+                sid = jp.stem.replace("local_", "")
+                if sid in seen_ids:
+                    continue
+                seen_ids.add(sid)
+                sessions.append({
+                    "id": sid,
+                    "title": data.get("title", data.get("initialMessage", sid))[:120],
+                    "created": _parse_ts(data.get("createdAt", 0)),
+                    "lastActivity": _parse_ts(data.get("lastActivityAt", 0)),
+                    "archived": data.get("isArchived", False),
+                    "model": data.get("model", ""),
+                    "cwd": data.get("cwd", ""),
+                    "jsonPath": str(jp),
+                    "folderPath": str(jp.parent / sid) if (jp.parent / sid).is_dir() else "",
+                })
+            except (json.JSONDecodeError, OSError, ValueError):
+                continue
     sessions.sort(key=lambda s: s["lastActivity"], reverse=True)
     return sessions
 
@@ -807,11 +786,10 @@ def get_server_status():
     # Quick session count — count top-level UUID dirs (one per session, instant)
     total_files = 0
     for d in SESSIONS_DIRS:
-        if d.is_dir():
-            try:
-                total_files += sum(1 for e in d.iterdir() if e.is_dir())
-            except OSError:
-                pass
+        try:
+            total_files += sum(1 for e in d.iterdir() if e.is_dir())
+        except OSError:
+            pass
 
     # Config file status
     config_files = {
@@ -822,7 +800,14 @@ def get_server_status():
         "cowork_state":     bool(PROJECT_DIR and (PROJECT_DIR / "cowork-state.json").is_file()),
     }
 
-    sessions_dirs_info = [{"path": str(d), "exists": d.is_dir()} for d in SESSIONS_DIRS]
+    def _accessible(p):
+        try:
+            next(p.iterdir()); return True
+        except StopIteration:
+            return True  # empty dir still accessible
+        except OSError:
+            return False
+    sessions_dirs_info = [{"path": str(d), "exists": _accessible(d)} for d in SESSIONS_DIRS]
 
     return {
         "uptime_str": uptime_str,
