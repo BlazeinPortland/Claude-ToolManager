@@ -1011,7 +1011,57 @@ class Handler(BaseHTTPRequestHandler):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _kill_stale_server():
+    """Kill any process already listening on PORT so a fresh start always works."""
+    killed = []
+    try:
+        # Windows: use netstat (works without admin rights)
+        if platform.system() == "Windows":
+            out = subprocess.check_output(
+                ["netstat", "-ano"], text=True, stderr=subprocess.DEVNULL
+            )
+            pids = set()
+            for line in out.splitlines():
+                if f":{PORT} " in line and "LISTENING" in line:
+                    parts = line.split()
+                    if parts:
+                        try:
+                            pids.add(int(parts[-1]))
+                        except ValueError:
+                            pass
+            for pid in pids:
+                if pid and pid != os.getpid():
+                    try:
+                        subprocess.run(
+                            ["powershell", "-NoProfile", "-Command",
+                             f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"],
+                            capture_output=True
+                        )
+                        killed.append(pid)
+                    except Exception:
+                        pass
+        else:
+            # macOS/Linux: lsof
+            out = subprocess.check_output(
+                ["lsof", "-ti", f"tcp:{PORT}"], text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            for pid_str in out.splitlines():
+                try:
+                    pid = int(pid_str)
+                    if pid != os.getpid():
+                        os.kill(pid, 9)
+                        killed.append(pid)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if killed:
+        print(f"  Stopped old instance(s): PID {', '.join(str(p) for p in killed)}")
+        time.sleep(0.8)
+
 def main():
+    _kill_stale_server()
+
     print()
     print("  Claude Tool Manager v2")
     print(f"  Global config:  {GLOBAL_DIR}")
