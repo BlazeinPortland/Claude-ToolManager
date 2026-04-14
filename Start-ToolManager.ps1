@@ -36,10 +36,20 @@ if (-not (Test-Path $AppFile)) {
 }
 
 # Kill any stale tool-manager process already on port 9191
-$stale = (Get-NetTCPConnection -LocalPort 9191 -ErrorAction SilentlyContinue).OwningProcess | Select-Object -Unique
-if ($stale) {
-    Write-Host "  Stopping old instance (PID $stale)..." -ForegroundColor DarkGray
-    $stale | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+# Try Get-NetTCPConnection first, fall back to netstat for non-admin users
+$stalePids = @()
+try {
+    $stalePids = (Get-NetTCPConnection -LocalPort 9191 -ErrorAction Stop).OwningProcess | Select-Object -Unique
+} catch {
+    # Fallback: parse netstat output (works without admin rights)
+    $netstatOut = netstat -ano 2>$null | Select-String ":9191 "
+    $stalePids = $netstatOut | ForEach-Object {
+        if ($_ -match '\s+(\d+)\s*$') { [int]$Matches[1] }
+    } | Select-Object -Unique
+}
+if ($stalePids) {
+    Write-Host "  Stopping old instance (PID $($stalePids -join ','))..." -ForegroundColor DarkGray
+    $stalePids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 800
 }
 
