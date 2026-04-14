@@ -53,7 +53,9 @@ cd Claude-ToolManager
 .\Start-ToolManager.ps1
 ```
 
-Or just double-click `Start-ToolManager.ps1` in Explorer.
+Or double-click **`Start-ToolManager.ps1`** in Explorer.
+
+> **Note:** Always launch via `Start-ToolManager.ps1` — do not double-click `tool-manager.py` directly. Claude Desktop on Windows is installed as an MSIX package whose session files are stored behind NTFS junction points that unpackaged processes (like a double-clicked Python script) cannot follow.
 
 ## Configuration Files
 
